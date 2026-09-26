@@ -46,20 +46,34 @@ Arguments: $ARGUMENTS
    - an existing task above that is clearly this same work;
    - otherwise a new short slug derived from the title (not one already taken).
 3. Run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" new <task>`. It
-   prints the target `file`, plus `task` and `previous` for the frontmatter.
-   If `previous` is not empty, read that file and carry over anything still
-   relevant (open questions, decisions, gotchas) — don't re-litigate settled
-   points, and drop what's done or obsolete. If it prints a `note:` about an
-   archived task, mention it (with the restore command) in your final reply.
-4. Review the whole conversation and fill the template below. Be specific:
-   exact file paths (backticked, `path:line` where useful), commands, error
+   prints the target `file`, the `task` for the frontmatter and the task's
+   `latest` handoff. If it prints a `note:` about an archived task, mention it
+   (with the restore command) in your final reply.
+4. If `latest` is not empty and that handoff is not in this conversation (the
+   session did not start with `/pickup` of this task, or the context was
+   compacted), read it. Carry over only open decisions, rejected alternatives
+   and gotchas that git, the code, the changelog and CLAUDE.md don't already
+   record; don't re-litigate settled points.
+5. If nothing happened since `latest` (no changes, decisions or new facts),
+   don't write a new file: reply that `latest` is still current and stop.
+6. Write from the current state, not by appending to the old handoff. Review
+   the whole conversation and fill the template below. Be specific: exact
+   file paths (backticked, `path:line` where useful), commands, error
    messages, numbers, names. Prefer bullets. Omit a section only if it would be
-   empty. If the user gave a focus, weight the handoff toward it.
-5. Never include secrets (tokens, passwords, keys, credentials) — reference
+   empty. If the user gave a focus, weight the handoff toward it. Keep it lean
+   (aim for under ~600 words):
+   - finished work already in git: one line with the commit hash, no details;
+   - don't repeat what CLAUDE.md or memory already says (environment facts,
+     user preferences);
+   - nothing one-off: usage limits, CI run IDs, "this session only resumed";
+   - other tasks: refer to them as `@task`, without describing their state;
+   - environment facts from an earlier handoff: keep only those confirmed in
+     this session.
+7. Never include secrets (tokens, passwords, keys, credentials) — reference
    where they live instead.
-6. Write the file with the Write tool to the `file` path from step 3.
-7. Run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" prune <task>` to keep only recent handoffs.
-8. Reply with `@<task>`, the file path and a 2–3 line summary. Nothing else.
+8. Write the file with the Write tool to the `file` path from step 3.
+9. Run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" prune <task>` to keep only recent handoffs.
+10. Reply with `@<task>`, the file path and a 2–3 line summary. Nothing else.
 
 ## Template
 
@@ -67,7 +81,6 @@ Arguments: $ARGUMENTS
 ---
 <metadata lines from above>
 task: <task from step 3>
-previous: <previous from step 3>
 session: ${CLAUDE_SESSION_ID}
 title: <short task name>
 ---

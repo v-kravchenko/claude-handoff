@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] - 2026-09-26
+
+### Changed
+
+- `/handoff` writes from the current state instead of appending to the last
+  handoff. It reads the last handoff only when it is not already in the
+  conversation, and carries over only open decisions, rejected alternatives
+  and gotchas that git, the code, the changelog and CLAUDE.md don't record.
+  It aims for under ~600 words, skips what CLAUDE.md or memory already says
+  and one-off details, and writes nothing when nothing changed.
+
+### Removed
+
+- The `previous` frontmatter field. It always pointed to the task's latest
+  handoff and broke when a task was archived. `handoff.sh new` now prints
+  `latest:` instead.
+
 ## [1.1.1] - 2026-09-26
 
 ### Removed
@@ -82,6 +99,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.1.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/v-kravchenko/claude-handoff/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.0.1...v1.0.2

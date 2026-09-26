@@ -75,7 +75,7 @@ has "## staleness"
 sleep 1
 F2=$(save "$P" alpha "Alpha task v2")
 run "$P" new alpha
-has "previous: $F2" "new reports the latest handoff as previous"
+has "latest: $F2" "new reports the latest handoff"
 
 save "$P" beta "Beta task" >/dev/null
 run "$P" show

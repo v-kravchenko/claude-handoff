@@ -25,8 +25,9 @@ machines, or to park a task and come back to it days later.
   directory that no longer exists.
 - **Git-aware.** Git worktrees of one repository share handoffs. Branch and
   commit are recorded, and nested repositories inside a project work.
-- **Chained history.** Each new handoff reads the previous one for its task
-  and carries over what is still relevant. The last 10 per task are kept.
+- **Chained history.** Each handoff is written from the current state. It
+  carries over from the task's last handoff only the open decisions and
+  gotchas not recorded elsewhere. The last 10 per task are kept.
 - **Dashboard.** `handoffs` shows every task of every project in the
   browser, with a one-click resume command.
 - **No secrets.** The skill is told never to write tokens or credentials,
@@ -168,7 +169,7 @@ Handoffs are plain Markdown files stored outside your repositories:
   Inside git it is the main repository root, so all worktrees map to the
   same place.
 - Each file starts with YAML frontmatter (`project`, `dir`, `repo`, `branch`,
-  `commit`, `created`, `task`, `previous`, `session`, `title`), followed by
+  `commit`, `created`, `task`, `session`, `title`), followed by
   the sections *Goal, State, Decisions, Key context, Gotchas, User
   preferences, Next steps, Verify*.
 - The model writes the summary; `skills/handoff/handoff.sh` handles storage,

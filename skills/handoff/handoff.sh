@@ -139,7 +139,7 @@ cmd_new() {
   while f="$(key)/$t/$(date +%Y-%m-%d_%H%M%S).md"; [[ -e $f ]]; do sleep 1; done
   echo "file: $f"
   echo "task: $t"
-  echo "previous: $prev"
+  echo "latest: $prev"
   if [[ -z $prev && -d $(key)/$ARCHIVE/$t ]]; then
     echo "note: @$t was archived; to continue it instead, restore: $(restore_cmd "$t")"
   fi

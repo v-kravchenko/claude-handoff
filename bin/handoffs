@@ -26,7 +26,7 @@ import sys
 import urllib.parse
 import webbrowser
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 ARCHIVE = "_archive"
 GOAL_MAX = 200
 NEXT_MAX = 3

@@ -32,12 +32,10 @@ Below, `handoff.sh` means `${CLAUDE_SKILL_DIR}/../handoff/handoff.sh "${CLAUDE_P
      go on with step 3.
 3. Otherwise treat the handoff as your working context. `task` is the task a
    later `/handoff` continues. `work dir` is where the work happened (it may be
-   a nested repo); run commands there. Check the staleness report:
-   - new commits, a non-ancestor commit or dirty files mean the world moved
-     on — read the relevant diffs/files before trusting the
-     handoff's State and Next steps, and point out the conflicts.
-   - if `previous` references an earlier handoff and something is unclear,
-     read it.
+   a nested repo); run commands there. Check the staleness report: new
+   commits, a non-ancestor commit or dirty files mean the world moved on —
+   read the relevant diffs/files before trusting the handoff's State and Next
+   steps, and point out the conflicts.
 4. Reply briefly:
    - `@task` and a one-line goal;
    - current state (3–5 bullets);
