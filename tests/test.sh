@@ -285,6 +285,7 @@ project: $P
 repo: none
 branch: none
 created: 2026-09-26 17:35:57 +0300
+task: alpha
 title: Fix "quotes" & \`code\` — кирилиця
 ---
 
@@ -366,7 +367,7 @@ EOF
   HANDOFF_ROOT="$D" python3 "$DASH" --no-open --port "$PORT" >"$TMP/dash.log" 2>&1 &
   DPID=$!
   OUT=$(python3 - "$PORT" "$D" <<'EOF'
-import http.client, sys, time
+import http.client, os, sys, time
 port = int(sys.argv[1])
 def get(path, host):
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -415,6 +416,21 @@ open(sys.argv[2] + "/home~app/alpha/.DS_Store", "w").close()
 print("done-extra", post("/api/done", body, {"X-Handoffs-Token": token}))
 print("restore-extra", post("/api/restore", body, {"X-Handoffs-Token": token}))
 print("traversal-post", post("/api/done", {"slug": "..", "task": "home~app"}, {"X-Handoffs-Token": token}))
+tk = {"X-Handoffs-Token": token}
+ren = lambda task, new, status="active": post("/api/rename", {"slug": "home~app", "status": status, "task": task, "new": new}, tk)
+print("rename-notoken", post("/api/rename", {"slug": "home~app", "status": "active", "task": "alpha", "new": "beta"}, {}))
+print("rename-bad", ren("alpha", "Bad Name"), ren("alpha", "_archive"), ren("alpha", "../x"))
+print("rename-taken", ren("alpha", "old"), ren("alpha", "empty"))
+print("rename-missing", ren("nope", "zeta"))
+print("rename-nofield", post("/api/rename", {"slug": "home~app", "task": "alpha"}, tk))
+print("rename", ren("alpha", "beta"))
+crlf = sys.argv[2] + "/home~app/_archive/old/2026-09-01_070000.md"
+open(crlf, "wb").write(b"---\r\ntask: old\r\ntitle: \xff raw\r\n---\r\nbody")
+os.utime(crlf, (1000000000, 1000000000))
+print("rename-arch", ren("old", "older", "archived"))
+crlf = crlf.replace("/old/", "/older/")
+print("rename-bytes", open(crlf, "rb").read() == b"---\r\ntask: older\r\ntitle: \xff raw\r\n---\r\nbody",
+      int(os.stat(crlf).st_mtime) == 1000000000, [f for f in os.listdir(os.path.dirname(crlf)) if f.startswith(".")])
 EOF
 )
   kill "$DPID" 2>/dev/null; wait "$DPID" 2>/dev/null
@@ -445,7 +461,19 @@ EOF
   has "done-extra 200" "done works with a stray file in the task dir"
   has "restore-extra 200" "restore works with a stray file in the task dir"
   has "traversal-post 409" "POST names outside the listing are rejected"
-  assert "done/restore round trip keeps both versions" [ "$(find "$D/home~app/alpha" -name '*.md' | wc -l | tr -d ' ')" -eq 2 ]
+  has "rename-notoken 403" "rename without the token is rejected"
+  has "rename-bad 409 409 409" "rename to an invalid name is rejected"
+  has "rename-taken 409 409" "rename to an existing active or archived task is rejected"
+  has "rename-missing 409" "rename of an unknown task fails"
+  has "rename-nofield 400" "rename without status/new is a bad request"
+  has "rename 200" "rename renames an active task"
+  has "rename-arch 200" "rename renames an archived task"
+  has "rename-bytes True True []" "rename keeps line endings, raw bytes and mtime, leaves no temp file"
+  assert "rename moves the task directory" [ -d "$D/home~app/beta" ]
+  assert "rename leaves no old directory" [ ! -e "$D/home~app/alpha" ]
+  assert "rename keeps the archived task archived" [ -d "$D/home~app/_archive/older" ]
+  assert "rename updates the task field" grep -qx 'task: beta' "$D/home~app/beta/2026-09-26_173557.md"
+  assert "done/restore round trip keeps both versions" [ "$(find "$D/home~app/beta" -name '*.md' | wc -l | tr -d ' ')" -eq 2 ]
   assert "restore removes the archive entry" [ ! -d "$D/home~app/_archive/alpha" ]
 
   # --read-only: no token, POST refused.

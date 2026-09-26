@@ -26,7 +26,7 @@ import sys
 import urllib.parse
 import webbrowser
 
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 ARCHIVE = "_archive"
 GOAL_MAX = 200
 NEXT_MAX = 3
@@ -267,6 +267,61 @@ def move_task(root, slug, task, archive):
     return None
 
 
+TASK_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
+
+
+def rename_task(root, slug, status, task, new):
+    """Rename a task (active or archived) in place and update the `task:` field
+    of its handoffs. Refuses names taken by an active or archived task.
+    Returns an error message or None."""
+    src = task_dir(root, slug, status, task)
+    if not src:
+        return "no such task"
+    if not TASK_RE.fullmatch(new) or new == ARCHIVE:
+        return "invalid name (use lowercase a-z0-9._-)"
+    if new == task:
+        return None
+    base = os.path.join(root, slug)
+    if any(os.path.exists(os.path.join(d, new)) for d in (base, os.path.join(base, ARCHIVE))):
+        return "@%s already exists" % new
+    dst = os.path.join(os.path.dirname(src), new)
+    try:
+        os.rename(src, dst)
+    except OSError as e:
+        return str(e)
+    for name in versions(dst):
+        set_task_field(os.path.join(dst, name), new)
+    return None
+
+
+def set_task_field(path, new):
+    """Rewrite the frontmatter `task:` line of a handoff, keeping everything
+    else byte for byte (line endings, mtime). Best effort: the directory name
+    is what counts."""
+    try:
+        with open(path, "rb") as fh:
+            lines = fh.read().splitlines(keepends=True)
+        if not lines or lines[0].strip() != b"---":
+            return
+        for i in range(1, len(lines)):
+            if lines[i].strip() == b"---":
+                return  # no `task:` field
+            if lines[i].startswith(b"task: "):
+                body = lines[i].rstrip(b"\r\n")
+                lines[i] = b"task: " + new.encode() + lines[i][len(body):]
+                break
+        else:
+            return  # unterminated frontmatter
+        st = os.stat(path)
+        tmp = os.path.join(os.path.dirname(path), "." + os.path.basename(path) + ".tmp")
+        with open(tmp, "wb") as fh:
+            fh.write(b"".join(lines))
+        os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def subdirs(path):
     try:
         names = sorted(os.listdir(path))
@@ -372,15 +427,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 or (origin and origin != "http://" + host):
             return self.send_json({"error": "forbidden"}, 403)
         path = self.path.split("?", 1)[0]
-        if path not in ("/api/done", "/api/restore"):
+        if path not in ("/api/done", "/api/restore", "/api/rename"):
             return self.not_found()
         try:
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
             slug, task = str(body["slug"]), str(body["task"])
+            if path == "/api/rename":
+                status, new = str(body["status"]), str(body["new"])
         except (ValueError, KeyError, TypeError):
             return self.send_json({"error": "bad request"}, 400)
-        err = move_task(handoff_root(), slug, task, archive=path == "/api/done")
+        if path == "/api/rename":
+            err = rename_task(handoff_root(), slug, status, task, new)
+        else:
+            err = move_task(handoff_root(), slug, task, archive=path == "/api/done")
         return self.send_json({"error": err}, 409) if err else self.send_json({"ok": True})
 
     def log_message(self, *args):
@@ -448,7 +508,7 @@ def main(argv=None):
                          "(default: $HANDOFF_PORT or 8765)" % (PORT_TRIES - 1))
     ap.add_argument("--host", default="127.0.0.1", help="address to listen on (default: 127.0.0.1)")
     ap.add_argument("--no-open", action="store_true", help="do not open a browser")
-    ap.add_argument("--read-only", action="store_true", help="disable Done/Restore buttons")
+    ap.add_argument("--read-only", action="store_true", help="disable Done/Restore/Rename buttons")
     ap.add_argument("--json", action="store_true", help="print the task data as JSON and exit")
     ap.add_argument("--version", action="version", version="handoffs " + VERSION)
     args = ap.parse_args(argv)
@@ -609,7 +669,7 @@ pre.diff .hunk { color: var(--accent); }
 .actions button, .dbar button { border-radius: 10px; }
 .dbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 2px; }
 .dbar .tabs { margin: 0; }
-.dbar .act { margin-left: auto; }
+.dbar .ren { margin-left: auto; }
 .toggle { margin-left: auto; }
 .empty, .error { padding: 24px; text-align: center; color: var(--muted); }
 .error { color: var(--warn); }
@@ -812,6 +872,7 @@ const ICONS = {
   folder: ["M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
   branch: ["M6 3v12", "M18 6a3 3 0 1 0 0 .01", "M6 18a3 3 0 1 0 0 .01", "M18 9c0 6-12 3-12 9"],
   commit: ["M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6", "M3 12h6", "M15 12h6"],
+  edit: ["M4 20h4L19 9l-4-4L4 16z", "M13 7l4 4"],
 };
 function icon(name) {
   const NS = "http://www.w3.org/2000/svg";
@@ -877,8 +938,8 @@ function diffView(text) {
   return pre;
 }
 
-// Details: git context, then tabs Latest / History and Done/Restore.
-function details(t, box, action) {
+// Details: git context, then tabs Latest / History and Rename, Done/Restore.
+function details(t, box, actions) {
   const crumbs = gitCrumbs(t);
   const tabs = el("div", "seg tabs");
   const view = el("div");
@@ -887,7 +948,7 @@ function details(t, box, action) {
   tabs.appendChild(latest); tabs.appendChild(hist);
   const bar = el("div", "dbar");
   bar.appendChild(tabs);
-  if (action) bar.appendChild(action);
+  actions.forEach((a) => bar.appendChild(a));
   if (crumbs) box.appendChild(crumbs);
   box.appendChild(bar); box.appendChild(view);
   const fail = (e) => { view.textContent = "Cannot load (" + e.message + ")."; };
@@ -1011,11 +1072,23 @@ function card(t) {
   copyBtn.title = "Copy: " + command(t);
   row.appendChild(copyBtn);
 
-  // Done/Restore lives in Details, away from the main button.
-  let act = null;
+  // Rename and Done/Restore live in Details, away from the main button.
+  const acts = [];
   if (data.writable) {
+    const ren = ibtn("edit", "Rename", "ren");
+    ren.title = "rename @" + t.task;
+    ren.addEventListener("click", async () => {
+      const name = prompt("New name for @" + t.task + " (lowercase a-z0-9._-):", t.task);
+      const next = name && name.trim().replace(/^@/, "");
+      if (!next || next === t.task) return;
+      if (!/^[a-z0-9][a-z0-9._-]*$/.test(next) || next === "_archive") { alert("Invalid name: use lowercase a-z0-9._-"); return; }
+      ren.disabled = true;
+      try { await post("rename", { slug: t.slug, status: t.status, task: t.task, new: next }); await load(); }
+      catch (e) { ren.disabled = false; alert("Failed: " + e.message); }
+    });
+    acts.push(ren);
     const done = t.status === "active";
-    act = ibtn(done ? "check" : "undo", done ? "Done" : "Restore", "act");
+    const act = ibtn(done ? "check" : "undo", done ? "Done" : "Restore", "act");
     act.title = done ? "archive the task (like /handoff @" + t.task + " done)" : "move the task back to active";
     act.addEventListener("click", async () => {
       if (!confirm((done ? "Archive" : "Restore") + " @" + t.task + "?")) return;
@@ -1023,6 +1096,7 @@ function card(t) {
       try { await post(done ? "done" : "restore", { slug: t.slug, task: t.task }); await load(); }
       catch (e) { act.disabled = false; alert("Failed: " + e.message); }
     });
+    acts.push(act);
   }
 
   const more = ibtn("down", "Details", "toggle");
@@ -1034,7 +1108,7 @@ function card(t) {
     const open = box.hidden;
     if (open) { if (closeOpen && closeOpen !== close) closeOpen(); closeOpen = close; }
     else if (closeOpen === close) closeOpen = null;
-    if (open && !loaded) { loaded = true; details(t, box, act).catch((e) => { box.textContent = "Cannot load (" + e.message + ")."; }); }
+    if (open && !loaded) { loaded = true; details(t, box, acts).catch((e) => { box.textContent = "Cannot load (" + e.message + ")."; }); }
     box.hidden = !open;
     c.classList.toggle("open", open);
     more.classList.toggle("flip", open);
