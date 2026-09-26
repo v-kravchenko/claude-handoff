@@ -4,7 +4,7 @@
 set -uo pipefail
 
 SCRIPT="$(cd "$(dirname "$0")/.." && pwd -P)/skills/handoff/handoff.sh"
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/handoff-test.XXXXXX")
+TMP=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/handoff-test.XXXXXX")" && pwd -P)  # physical path (macOS /var -> /private/var)
 trap 'rm -rf "$TMP"' EXIT
 
 export HANDOFF_ROOT="$TMP/root"

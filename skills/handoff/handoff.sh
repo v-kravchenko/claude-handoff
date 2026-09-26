@@ -131,7 +131,7 @@ cmd_prune() {
 
 cmd_done() {
   local t=${1#@} dst
-  valid_task "$t" && [[ -d $(key)/$t ]] || { echo "NO TASK: @$t"; return; }
+  if ! valid_task "$t" || [[ ! -d $(key)/$t ]]; then echo "NO TASK: @$t"; return; fi
   dst="$(key)/$ARCHIVE/$t"
   mkdir -p "$dst" && mv -- "$(key)/$t"/*.md "$dst"/ 2>/dev/null
   rmdir -- "$(key)/$t" 2>/dev/null
