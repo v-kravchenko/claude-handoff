@@ -74,7 +74,7 @@ and `/handoff:pickup` instead.
 | `/handoff @task done` | Archive a finished task. |
 | `/pickup` | Resume the only task, or list the tasks to choose from. |
 | `/pickup @task` | Resume a specific task. |
-| `/pickup path/to/file.md` | Resume from a specific handoff file. |
+| `/pickup path/to/file.md` | Resume from a specific handoff file (the path must contain `/` or end in `.md`). |
 
 A typical loop:
 
@@ -122,15 +122,17 @@ Handoffs are plain Markdown files stored outside your repositories:
   task listing, pruning, archiving and the staleness report. The script
   always exits 0, because a failing `!` command would abort the skill.
 
-To restore an archived task, move its directory back. The `/pickup` message
-for an archived task prints the exact `mv` command.
+To restore an archived task, run `/pickup @task`: for an archived task it
+prints the exact command, which moves the handoffs back (merging them into a
+new task of the same name, if you started one). `/handoff @task` also warns
+when it starts a new task whose name is in the archive.
 
 ## Configuration
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `HANDOFF_ROOT` | `${CLAUDE_CONFIG_DIR:-~/.claude}/handoffs` | Where handoffs are stored. |
-| `HANDOFF_KEEP` | `10` | Handoffs kept per task. Older ones are deleted when you save. |
+| `HANDOFF_KEEP` | `10` | Handoffs kept per task (a positive integer; anything else means 10). Older ones are deleted when you save. |
 
 Set them in your shell profile or in the `env` block of
 `~/.claude/settings.json`.

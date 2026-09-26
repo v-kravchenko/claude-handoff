@@ -9,7 +9,7 @@ allowed-tools: Bash(${CLAUDE_SKILL_DIR}/../handoff/handoff.sh *) Read
 # Resume from a handoff
 
 ```!
-${CLAUDE_SKILL_DIR}/../handoff/handoff.sh ${CLAUDE_PROJECT_DIR} show $ARGUMENTS
+${CLAUDE_SKILL_DIR}/../handoff/handoff.sh "${CLAUDE_PROJECT_DIR}" show "$ARGUMENTS"
 ```
 
 ## Steps

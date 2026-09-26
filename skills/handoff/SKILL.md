@@ -18,19 +18,19 @@ Metadata (copy verbatim into the frontmatter; `dir` comes from the shell cwd,
 so if the work clearly happened elsewhere, replace it with the real work dir):
 
 ```!
-${CLAUDE_SKILL_DIR}/handoff.sh ${CLAUDE_PROJECT_DIR} meta
+${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" meta
 ```
 
 Git state:
 
 ```!
-${CLAUDE_SKILL_DIR}/handoff.sh ${CLAUDE_PROJECT_DIR} git
+${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" git
 ```
 
 Existing tasks in this project (`@task | title | last saved`):
 
 ```!
-${CLAUDE_SKILL_DIR}/handoff.sh ${CLAUDE_PROJECT_DIR} tasks
+${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" tasks
 ```
 
 Arguments: $ARGUMENTS
@@ -38,18 +38,19 @@ Arguments: $ARGUMENTS
 ## Steps
 
 1. If the arguments are exactly `@<task> done`: run
-   `${CLAUDE_SKILL_DIR}/handoff.sh ${CLAUDE_PROJECT_DIR} done <task>`, reply
+   `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" done <task>`, reply
    with its output and stop.
 2. Pick the task (a lowercase slug, `a-z0-9._-`), first match wins:
    - `@<task>` at the start of the arguments; the rest are focus/notes;
    - the task this session resumed with `/pickup` (its output has `task: ...`);
    - an existing task above that is clearly this same work;
    - otherwise a new short slug derived from the title (not one already taken).
-3. Run `${CLAUDE_SKILL_DIR}/handoff.sh ${CLAUDE_PROJECT_DIR} new <task>`. It
+3. Run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" new <task>`. It
    prints the target `file`, plus `task` and `previous` for the frontmatter.
    If `previous` is not empty, read that file and carry over anything still
    relevant (open questions, decisions, gotchas) — don't re-litigate settled
-   points, and drop what's done or obsolete.
+   points, and drop what's done or obsolete. If it prints a `note:` about an
+   archived task, mention it (with the restore command) in your final reply.
 4. Review the whole conversation and fill the template below. Be specific:
    exact file paths (backticked, `path:line` where useful), commands, error
    messages, numbers, names. Prefer bullets. Omit a section only if it would be
@@ -57,7 +58,7 @@ Arguments: $ARGUMENTS
 5. Never include secrets (tokens, passwords, keys, credentials) — reference
    where they live instead.
 6. Write the file with the Write tool to the `file` path from step 3.
-7. Run `${CLAUDE_SKILL_DIR}/handoff.sh ${CLAUDE_PROJECT_DIR} prune <task>` to keep only recent handoffs.
+7. Run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" prune <task>` to keep only recent handoffs.
 8. Reply with `@<task>`, the file path and a 2–3 line summary. Nothing else.
 
 ## Template

@@ -14,12 +14,22 @@ set -uo pipefail
 
 ROOT="${HANDOFF_ROOT:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/handoffs}"
 KEEP="${HANDOFF_KEEP:-10}"
+[[ $KEEP =~ ^[1-9][0-9]*$ ]] || KEEP=10
 ARCHIVE=_archive
 PROJECT=${1:-}
 CMD=${2:-}
 WORKDIR=$(pwd -P)
 
-slug() { sed -e "s|^$HOME|home|" -e 's|^/||' -e 's|/|~|g'; }
+# /path/to/dir -> path~to~dir; $HOME -> home, $HOME/x -> home~x; / -> root.
+slug() {
+  local p=$1
+  case $p in
+    "$HOME") p=home ;;
+    "$HOME"/*) p=home${p#"$HOME"} ;;
+  esac
+  p=${p#/}
+  if [[ -n $p ]]; then tr / '~' <<<"$p"; else echo root; fi
+}
 field() { sed -n "s/^$1: //p" "$2" | head -n 1; }
 
 in_git() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
@@ -38,7 +48,7 @@ branch() {
 key() (
   cd "$PROJECT" || exit
   local base; if in_git; then base=$(repo_root); else base=$(pwd -P); fi
-  echo "$ROOT/$(slug <<<"$base")"
+  echo "$ROOT/$(slug "$base")"
 )
 
 valid_task() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]*$ && $1 != "$ARCHIVE" ]]; }
@@ -66,13 +76,20 @@ task_names() {
   done | sort -r | cut -d' ' -f2
 }
 
+# Shell command that moves an archived task back (also merges into an active
+# task of the same name).
+restore_cmd() {
+  local k; k=$(key)
+  echo "mkdir -p '$k/$1' && mv '$k/$ARCHIVE/$1'/*.md '$k/$1'/ && rmdir '$k/$ARCHIVE/$1'"
+}
+
 # @query -> task (exact name). Prints the task or a message.
 resolve() {
   local q=${1#@}
   if valid_task "$q" && [[ -d $(key)/$q ]]; then
     echo "$q"
-  elif [[ -n $q && -d $(key)/$ARCHIVE/$q ]]; then
-    echo "ARCHIVED: @$q (restore: mv '$(key)/$ARCHIVE/$q' '$(key)/')"; return 1
+  elif valid_task "$q" && [[ -d $(key)/$ARCHIVE/$q ]]; then
+    echo "ARCHIVED: @$q (restore: $(restore_cmd "$q"))"; return 1
   else
     echo "NO TASK: @$q"; return 1
   fi
@@ -114,13 +131,18 @@ cmd_tasks() {
 }
 
 cmd_new() {
-  local t=${1#@}
+  local t=${1#@} f
   valid_task "$t" || { echo "INVALID TASK: '$t' (use lowercase a-z0-9._-)"; return; }
   local prev; prev=$(latest "$t")
   mkdir -p "$(key)/$t"
-  echo "file: $(key)/$t/$(date +%Y-%m-%d_%H%M%S).md"
+  # Names have one-second resolution; never hand out an existing file.
+  while f="$(key)/$t/$(date +%Y-%m-%d_%H%M%S).md"; [[ -e $f ]]; do sleep 1; done
+  echo "file: $f"
   echo "task: $t"
   echo "previous: $prev"
+  if [[ -z $prev && -d $(key)/$ARCHIVE/$t ]]; then
+    echo "note: @$t was archived; to continue it instead, restore: $(restore_cmd "$t")"
+  fi
 }
 
 cmd_prune() {
@@ -132,6 +154,10 @@ cmd_prune() {
 cmd_done() {
   local t=${1#@} dst
   if ! valid_task "$t" || [[ ! -d $(key)/$t ]]; then echo "NO TASK: @$t"; return; fi
+  if [[ -z $(latest "$t") ]]; then
+    rmdir -- "$(key)/$t" 2>/dev/null
+    echo "NO TASK: @$t (no handoffs saved)"; return
+  fi
   dst="$(key)/$ARCHIVE/$t"
   mkdir -p "$dst" && mv -- "$(key)/$t"/*.md "$dst"/ 2>/dev/null
   rmdir -- "$(key)/$t" 2>/dev/null
@@ -178,12 +204,13 @@ cmd_stale() (
 )
 
 # show [@task|task|FILE]; with no argument, the only task or a task list.
+# A FILE must contain a slash or end in .md; words after a task are ignored.
 cmd_show() {
   local arg=${1:-} f t
-  if [[ -n $arg && -f $arg ]]; then
+  if [[ ($arg == */* || $arg == *.md) && -f $arg ]]; then
     f=$arg
   elif [[ -n $arg ]]; then
-    t=$(resolve "$arg") || { echo "$t"; echo; echo "## tasks"; cmd_tasks; return; }
+    t=$(resolve "${arg%%[[:space:]]*}") || { echo "$t"; echo; echo "## tasks"; cmd_tasks; return; }
     f=$(latest "$t")
     [[ -n $f ]] || { echo "NO TASK: @$t (no handoffs saved)"; return; }
   else

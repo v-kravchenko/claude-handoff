@@ -162,5 +162,96 @@ sed -i.bak "s/^created: .*/created: 2000-01-01 00:00:00 +0000/" "$F2" && rm -f "
 run "$P" show @alpha
 if grep -qE '^age: [0-9]{5,}h' <<<"$OUT"; then ok; else fail "age is computed from created"; fi
 
+# --- plain directory staleness -------------------------------------------
+cd "$P" || exit 1
+run "$P" show @alpha
+has "work dir: $P" "non-git handoff reports its work dir"
+lacks "commits since" "non-git handoff has no git report"
+
+# --- paths with spaces ---------------------------------------------------
+S="$TMP/My Proj"; mkdir -p "$S"; cd "$S" || exit 1
+SF=$(save "$S" spaced "Spaced task")
+case $SF in *"My Proj/spaced/"*.md) ok ;; *) fail "project path with a space: $SF" ;; esac
+run "$S" show @spaced
+has "file: $SF" "show works in a project path with a space"
+
+# --- skill injections, run the way Claude Code substitutes them ------------
+SKILLS="$(dirname "$SCRIPT")/.."
+# inject SKILL_NAME ARGUMENTS: runs every ```! block of the skill.
+# shellcheck disable=SC2016  # literal placeholders
+inject() {
+  local cmd
+  cmd=$(awk '/^```!$/ {on=1; next} /^```$/ {on=0} on' "$SKILLS/$1/SKILL.md")
+  cmd=${cmd//'${CLAUDE_SKILL_DIR}'/$SKILLS/$1}
+  cmd=${cmd//'${CLAUDE_PROJECT_DIR}'/$S}
+  cmd=${cmd//'$ARGUMENTS'/$2}
+  OUT=$(bash -c "$cmd" 2>&1) || fail "injection failed for /$1 $2"
+}
+inject handoff ""
+has "project: $S" "/handoff meta works with a space in the project path"
+has "@spaced | Spaced task" "/handoff task list works with a space in the project path"
+lacks "usage:"
+inject pickup ""
+has "task: spaced" "/pickup works with a space in the project path"
+inject pickup "@spaced some notes"
+has "task: spaced" "/pickup ignores words after the task"
+
+for s in handoff pickup; do
+  f="$SKILLS/$s/SKILL.md"
+  assert "$s: frontmatter starts the file" [ "$(head -n 1 "$f")" = "---" ]
+  assert "$s: frontmatter is closed" [ "$(sed -n '2,$p' "$f" | grep -c '^---$')" -ge 1 ]
+  assert "$s: name matches the directory" grep -qx "name: $s" "$f"
+  assert "$s: has a description" grep -q '^description: .' "$f"
+done
+
+# --- same-second saves -----------------------------------------------------
+A=$(save "$S" fast "One"); B=$(save "$S" fast "Two")
+assert "two saves in a row get different files" [ "$A" != "$B" ]
+assert "the first save is kept" grep -q "title: One" "$A"
+
+# --- HANDOFF_KEEP validation ---------------------------------------------
+HANDOFF_KEEP=0 run "$S" prune fast
+assert "HANDOFF_KEEP=0 falls back to the default" [ -f "$A" ]
+assert "HANDOFF_KEEP=0 keeps the newest file" [ -f "$B" ]
+HANDOFF_KEEP=abc run "$S" prune fast
+assert "HANDOFF_KEEP=abc falls back to the default" [ -f "$A" ]
+
+# --- aborted save, reopening ----------------------------------------------
+run "$S" new empty
+run "$S" "done" empty
+has "no handoffs saved" "done on a task with no handoffs"
+K=$(dirname "$(dirname "$SF")")
+assert "no empty archive is created" [ ! -d "$K/_archive/empty" ]
+assert "the empty task dir is removed" [ ! -d "$K/empty" ]
+
+run "$S" "done" spaced
+run "$S" new spaced
+has "note: @spaced was archived" "new warns about an archived task of the same name"
+C=$(save "$S" spaced "Spaced again")
+run "$S" show @spaced
+has "file: $C"
+run "$S" "done" spaced
+run "$S" show @spaced
+restore=$(sed -n 's/^ARCHIVED: .*(restore: \(.*\))$/\1/p' <<<"$OUT")
+assert "restore hint is printed" [ -n "$restore" ]
+bash -c "$restore"
+n=$(find "$K/spaced" -name '*.md' | wc -l | tr -d ' ')
+assert "restore brings back all handoffs (got $n)" [ "$n" -eq 2 ]
+assert "restore removes the archive entry" [ ! -d "$K/_archive/spaced" ]
+
+# --- show: files vs tasks ------------------------------------------------
+: >"$S/spaced"
+run "$S" show spaced
+has "file: $C" "a bare word is a task even if such a file exists"
+
+# --- project keys ----------------------------------------------------------
+mkdir -p "$TMP/h" "$TMP/hx"
+HOME="$TMP/h" run "$TMP/h" new t
+has "$HANDOFF_ROOT/home/t/" "\$HOME maps to home"
+HOME="$TMP/h" run "$TMP/hx" new t
+lacks "$HANDOFF_ROOT/homex" "a sibling of \$HOME is not treated as home"
+HANDOFF_ROOT="$TMP/r2" run / new t
+has "$TMP/r2/root/t/" "the filesystem root maps to root"
+
 echo "passed: $PASS, failed: $FAIL"
 [[ $FAIL -eq 0 ]]
