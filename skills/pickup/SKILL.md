@@ -14,11 +14,22 @@ ${CLAUDE_SKILL_DIR}/../handoff/handoff.sh "${CLAUDE_PROJECT_DIR}" show "$ARGUMEN
 
 ## Steps
 
+Below, `handoff.sh` means `${CLAUDE_SKILL_DIR}/../handoff/handoff.sh "${CLAUDE_PROJECT_DIR}"`.
+
 1. If the output says `NO HANDOFF`: tell the user there is no handoff for this
    project directory. Stop.
-2. If it says `CHOOSE TASK`, `NO TASK` or `ARCHIVED`: show the
-   message and the task list, and ask which one to resume (`/pickup @task`).
-   Stop.
+2. If it says `CHOOSE TASK`, `NO TASK` or `ARCHIVED`, let the user pick with
+   one AskUserQuestion call. Options come from the `## tasks` list (newest
+   first); each label is `@task`, each description its title and date:
+   - `CHOOSE TASK`: the 4 newest tasks.
+   - `NO TASK`: say the task was not found; offer the 4 newest tasks. With a
+     single task, still ask ("Did you mean @x?").
+   - `ARCHIVED`: first option `Restore @x`, then up to 3 newest active tasks.
+   If that leaves fewer than 2 options, add `Cancel` (it stops). The user can
+   type another `@task` via "Other". Then:
+   - a task: run `handoff.sh show @task` and go on with step 3;
+   - `Restore @x`: run `handoff.sh restore x`, then `handoff.sh show @x`, and
+     go on with step 3.
 3. Otherwise treat the handoff as your working context. `task` is the task a
    later `/handoff` continues. `work dir` is where the work happened (it may be
    a nested repo); run commands there. Check the staleness report:

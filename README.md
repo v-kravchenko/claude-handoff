@@ -122,10 +122,13 @@ Handoffs are plain Markdown files stored outside your repositories:
   task listing, pruning, archiving and the staleness report. The script
   always exits 0, because a failing `!` command would abort the skill.
 
-To restore an archived task, run `/pickup @task`: for an archived task it
-prints the exact command, which moves the handoffs back (merging them into a
-new task of the same name, if you started one). `/handoff @task` also warns
-when it starts a new task whose name is in the archive.
+`/pickup` with no task, or with an unknown or archived one, lets you pick a
+task from a menu of the newest tasks (a single task loads right away). For
+an archived task the menu offers *Restore*, which moves the handoffs back
+(merging them into a new task of the same name, if you started one) and
+loads it. `handoff.sh PROJECT_DIR restore TASK` does the same by hand.
+`/handoff @task` also warns when it starts a new task whose name is in the
+archive.
 
 ## Configuration
 

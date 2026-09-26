@@ -203,6 +203,14 @@ cmd_stale() (
   fi
 )
 
+# restore TASK: moves an archived task back (merges into an active one).
+cmd_restore() {
+  local t=${1#@} k; k=$(key)
+  if ! valid_task "$t" || [[ ! -d $k/$ARCHIVE/$t ]]; then echo "NO TASK: @$t (not archived)"; return; fi
+  mkdir -p "$k/$t" && mv "$k/$ARCHIVE/$t"/*.md "$k/$t"/ && rmdir "$k/$ARCHIVE/$t" &&
+    echo "restored: @$t"
+}
+
 # show [@task|task|FILE]; with no argument, the only task or a task list.
 # A FILE must contain a slash or end in .md; words after a task are ignored.
 cmd_show() {
@@ -235,7 +243,7 @@ cmd_show() {
   cat "$f"
 }
 
-USAGE="usage: handoff.sh PROJECT_DIR meta|git|tasks|new TASK|prune TASK|done TASK|stale FILE|show [@TASK|FILE]"
+USAGE="usage: handoff.sh PROJECT_DIR meta|git|tasks|new TASK|prune TASK|done TASK|restore TASK|stale FILE|show [@TASK|FILE]"
 
 if [[ -z $PROJECT || ! -d $PROJECT ]]; then
   echo "$USAGE"
@@ -249,6 +257,7 @@ case "$CMD" in
   new) cmd_new "${3:-}" ;;
   prune) cmd_prune "${3:-}" ;;
   done) cmd_done "${3:-}" ;;
+  restore) cmd_restore "${3:-}" ;;
   stale) cmd_stale "${3:-}" ;;
   show) cmd_show "${3:-}" ;;
   *) echo "$USAGE" ;;

@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] - 2026-09-26
+
+### Added
+
+- `/pickup` with no task, or with an unknown or archived one, shows a menu of
+  the newest tasks, so you pick one with a click instead of typing
+  `/pickup @task`. For an archived task the menu offers *Restore*, which moves
+  the handoffs back and loads the task.
+- `handoff.sh PROJECT_DIR restore TASK` restores an archived task.
+
 ## [1.0.1] - 2026-09-26
 
 ### Fixed
@@ -46,5 +56,6 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.0.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/v-kravchenko/claude-handoff/releases/tag/v1.0.0

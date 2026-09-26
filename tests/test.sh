@@ -203,6 +203,8 @@ for s in handoff pickup; do
   assert "$s: name matches the directory" grep -qx "name: $s" "$f"
   assert "$s: has a description" grep -q '^description: .' "$f"
 done
+assert "pickup: offers a menu via AskUserQuestion" grep -q AskUserQuestion "$SKILLS/pickup/SKILL.md"
+assert "pickup: restores via the script" grep -qF 'handoff.sh restore' "$SKILLS/pickup/SKILL.md"
 
 # --- same-second saves -----------------------------------------------------
 A=$(save "$S" fast "One"); B=$(save "$S" fast "Two")
@@ -238,6 +240,18 @@ bash -c "$restore"
 n=$(find "$K/spaced" -name '*.md' | wc -l | tr -d ' ')
 assert "restore brings back all handoffs (got $n)" [ "$n" -eq 2 ]
 assert "restore removes the archive entry" [ ! -d "$K/_archive/spaced" ]
+
+# --- restore command -----------------------------------------------------
+run "$S" "done" spaced
+run "$S" restore @spaced
+has "restored: @spaced"
+n=$(find "$K/spaced" -name '*.md' | wc -l | tr -d ' ')
+assert "restore command brings back all handoffs (got $n)" [ "$n" -eq 2 ]
+assert "restore command removes the archive entry" [ ! -d "$K/_archive/spaced" ]
+run "$S" restore spaced
+has "NO TASK: @spaced (not archived)" "restore of an active task is refused"
+run "$S" restore ../x
+has "NO TASK:" "restore rejects invalid names"
 
 # --- show: files vs tasks ------------------------------------------------
 : >"$S/spaced"
