@@ -1,0 +1,1252 @@
+#!/usr/bin/env python3
+"""Local web dashboard for claude-handoff tasks (part of claude-handoff).
+
+Usage: handoffs [--port N] [--host ADDR] [--no-open] [--json] [--version]
+
+Serves a read-only page with every task of every project under the handoff
+root ($HANDOFF_ROOT, else $CLAUDE_CONFIG_DIR/handoffs, else ~/.claude/handoffs).
+Data is read from disk on every request. Python 3.8+, standard library only.
+"""
+
+import argparse
+import datetime
+import difflib
+import hmac
+import http.server
+import ipaddress
+import json
+import os
+import platform
+import re
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import urllib.parse
+import webbrowser
+
+VERSION = "1.1.0"
+ARCHIVE = "_archive"
+GOAL_MAX = 200
+NEXT_MAX = 3
+PORT_TRIES = 10
+GIT_TIMEOUT = 3
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+def handoff_root():
+    root = os.environ.get("HANDOFF_ROOT")
+    if not root:
+        config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+        root = os.path.join(config, "handoffs")
+    return root
+
+
+# --- parsing ------------------------------------------------------------------
+
+def parse_frontmatter(lines):
+    """Returns (fields, index of the first body line)."""
+    fields = {}
+    if not lines or lines[0].strip() != "---":
+        return fields, 0
+    for i in range(1, len(lines)):
+        line = lines[i]
+        if line.strip() == "---":
+            return fields, i + 1
+        key, sep, value = line.partition(": ")
+        if sep and key and key not in fields:
+            fields[key.strip()] = value.strip()
+    return {}, 0  # unterminated: treat the whole file as body
+
+
+def section(body, name):
+    """Lines of the `## name` section (up to the next `#`/`##` heading)."""
+    out, inside = [], False
+    for line in body:
+        if re.match(r"#{1,2}\s", line):
+            if inside:
+                break
+            inside = line.lstrip("#").strip().lower() == name
+            continue
+        if inside:
+            out.append(line)
+    return out
+
+
+def first_paragraph(lines, limit):
+    para = []
+    for line in lines:
+        if line.strip():
+            para.append(line.strip())
+        elif para:
+            break
+    text = " ".join(para)
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].rstrip(" ,.;:") + "…"
+    return text
+
+
+def list_items(lines):
+    """Top-level items of a markdown list; indented lines continue an item."""
+    items = []
+    for line in lines:
+        m = re.match(r"(\d+[.)]|[-*+])\s+(.*)", line)
+        if m:
+            items.append(m.group(2).strip())
+        elif items and line.strip() and line[:1] in " \t":
+            items[-1] += " " + line.strip()
+    return items
+
+
+def iso_created(created, filename):
+    """ISO 8601 time: from the frontmatter, else from the file name (local time)."""
+    for value, fmt in ((created, "%Y-%m-%d %H:%M:%S %z"), (filename[:17], "%Y-%m-%d_%H%M%S")):
+        try:
+            return datetime.datetime.strptime(value, fmt).isoformat()
+        except (TypeError, ValueError):
+            pass
+    return ""
+
+
+def own_repo(fields):
+    """Git fields describe the project itself: the project directory is the
+    repository, or a worktree of it (then `repo` is the main checkout)."""
+    project, repo = fields.get("project", ""), fields.get("repo", "")
+    if not project or repo in ("", "none"):
+        return False
+    return repo == project or (fields.get("dir") == project and os.path.exists(os.path.join(project, ".git")))
+
+
+def read_task(task_dir, task, status):
+    files = sorted(f for f in os.listdir(task_dir) if f.endswith(".md"))
+    if not files:
+        return None
+    latest = files[-1]
+    try:
+        with open(os.path.join(task_dir, latest), encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None
+    fields, start = parse_frontmatter(lines)
+    body = lines[start:]
+    steps = list_items(section(body, "next steps"))
+    project = fields.get("project", "")
+    none = lambda v: "" if v in (None, "none") else v  # noqa: E731
+    return {
+        "task": task,
+        "status": status,
+        "title": fields.get("title") or task,
+        "project": project,
+        "project_exists": bool(project) and os.path.isdir(project),
+        "created": iso_created(fields.get("created"), latest),
+        "saved": latest[:-3],
+        "versions": len(files),
+        "goal": first_paragraph(section(body, "goal"), GOAL_MAX),
+        "next": steps[:NEXT_MAX],
+        "next_more": max(0, len(steps) - NEXT_MAX),
+        "repo": none(fields.get("repo")),
+        "branch": none(fields.get("branch")),
+        "commit": none(fields.get("commit"))[:7],
+        "dir": none(fields.get("dir")),
+        "git": own_repo(fields),
+    }
+
+
+def task_dir(root, slug, status, task):
+    """Directory of a listed task, or None. Names are matched against directory
+    listings, never joined from user input directly."""
+    if slug not in subdirs(root):
+        return None
+    base = os.path.join(root, slug, ARCHIVE) if status == "archived" else os.path.join(root, slug)
+    names = subdirs(base)
+    if task not in names or (status != "archived" and task == ARCHIVE):
+        return None
+    return os.path.join(base, task)
+
+
+def versions(d):
+    try:
+        return sorted(f for f in os.listdir(d) if f.endswith(".md")) if d else []
+    except OSError:
+        return []
+
+
+def read_lines(d, name):
+    try:
+        with open(os.path.join(d, name), encoding="utf-8", errors="replace") as fh:
+            return fh.read().splitlines()
+    except OSError:
+        return None
+
+
+def pick(files, name):
+    """`name` if it is one of `files`, the latest file if `name` is empty, else None."""
+    if not files:
+        return None
+    if not name:
+        return files[-1]
+    return name if name in files else None
+
+
+def read_body(root, slug, status, task, name=""):
+    """Markdown body (without frontmatter) of one handoff of a task (default: the latest)."""
+    d = task_dir(root, slug, status, task)
+    name = pick(versions(d), name)
+    lines = read_lines(d, name) if name else None
+    if lines is None:
+        return None
+    _, start = parse_frontmatter(lines)
+    return {"file": name, "body": "\n".join(lines[start:]).strip("\n")}
+
+
+def history(root, slug, status, task):
+    d = task_dir(root, slug, status, task)
+    out = []
+    for name in reversed(versions(d)):
+        fields, _ = parse_frontmatter(read_lines(d, name) or [])
+        out.append({"file": name, "title": fields.get("title") or task,
+                    "created": iso_created(fields.get("created"), name)})
+    return out if d else None
+
+
+def diff(root, slug, status, task, old, new):
+    d = task_dir(root, slug, status, task)
+    files = versions(d)
+    if not old or not new or pick(files, old) is None or pick(files, new) is None:
+        return None
+    def body(name):
+        lines = read_lines(d, name) or []
+        return lines[parse_frontmatter(lines)[1]:]
+    lines = difflib.unified_diff(body(old), body(new), old, new, lineterm="", n=2)
+    return {"old": old, "new": new, "diff": "\n".join(lines)}
+
+
+def git(cwd, *args):
+    try:
+        r = subprocess.run(("git",) + args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, timeout=GIT_TIMEOUT, universal_newlines=True)
+        return r.returncode, r.stdout
+    except (OSError, subprocess.SubprocessError):
+        return -1, ""
+
+
+def stale(root, slug, status, task):
+    """What changed in the project repository since the latest handoff. Only the
+    project directory counts: a repository nested inside it is not reported."""
+    d = task_dir(root, slug, status, task)
+    name = pick(versions(d), "")
+    if not name:
+        return None
+    fields, _ = parse_frontmatter(read_lines(d, name) or [])
+    where = fields.get("project", "")
+    out = {"dir": where, "exists": bool(where) and os.path.isdir(where), "git": False}
+    if not out["exists"] or not shutil.which("git"):
+        return out
+    rc, top = git(where, "rev-parse", "--show-toplevel")
+    if rc != 0 or os.path.realpath(top.strip()) != os.path.realpath(where):
+        return out
+    out["git"] = True
+    commit = fields.get("commit", "") if own_repo(fields) else ""
+    if commit and commit != "none":
+        rc, _ = git(where, "cat-file", "-e", commit + "^{commit}")
+        out["commit_found"] = rc == 0
+        if rc == 0:
+            _, n = git(where, "rev-list", "--count", commit + "..HEAD")
+            out["commits"] = int(n.strip() or 0)
+            _, log = git(where, "log", "--oneline", "-n", "10", commit + "..HEAD")
+            out["log"] = log.splitlines()
+            rc, _ = git(where, "merge-base", "--is-ancestor", commit, "HEAD")
+            out["ancestor"] = rc == 0
+    _, st = git(where, "status", "--short")
+    out["dirty"] = st.splitlines()[:20]
+    out["dirty_count"] = len(st.splitlines())
+    return out
+
+
+def search(root, query):
+    """Tasks whose latest handoff contains `query` (case-insensitive), with a snippet."""
+    q = query.strip().lower()
+    hits = []
+    if len(q) < 2:
+        return hits
+    for slug in subdirs(root):
+        base = os.path.join(root, slug)
+        dirs = [(n, "active", os.path.join(base, n)) for n in subdirs(base) if n != ARCHIVE]
+        dirs += [(n, "archived", os.path.join(base, ARCHIVE, n)) for n in subdirs(os.path.join(base, ARCHIVE))]
+        for task, status, d in dirs:
+            name = pick(versions(d), "")
+            text = "\n".join(read_lines(d, name) or []) if name else ""
+            i = text.lower().find(q)
+            if i >= 0:
+                s = max(0, i - 60)
+                snippet = " ".join(text[s:i + len(q) + 60].split())
+                hits.append({"slug": slug, "status": status, "task": task,
+                             "snippet": ("…" if s else "") + snippet + "…"})
+    return hits
+
+
+def move_task(root, slug, task, archive):
+    """Archive (`done`) or restore a task, merging into an existing directory,
+    like `handoff.sh done|restore`. Returns an error message or None."""
+    src = task_dir(root, slug, "active" if archive else "archived", task)
+    if not src:
+        return "no such task"
+    files = versions(src)
+    if not files:
+        return "no handoffs saved"
+    base = os.path.join(root, slug)
+    dst = os.path.join(base, ARCHIVE, task) if archive else os.path.join(base, task)
+    try:
+        if not os.path.exists(dst):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.replace(src, dst)
+            return None
+        for f in files:  # a task with this name exists there: merge the handoffs
+            os.replace(os.path.join(src, f), os.path.join(dst, f))
+    except OSError as e:
+        return str(e)
+    shutil.rmtree(src, ignore_errors=True)  # leftovers such as .DS_Store
+    return None
+
+
+def subdirs(path):
+    try:
+        names = sorted(os.listdir(path))
+    except OSError:
+        return []
+    return [n for n in names if not n.startswith(".") and os.path.isdir(os.path.join(path, n))]
+
+
+def collect(root):
+    tasks = []
+    for slug in subdirs(root):
+        base = os.path.join(root, slug)
+        for name in subdirs(base):
+            if name == ARCHIVE:
+                for arch in subdirs(os.path.join(base, ARCHIVE)):
+                    tasks.append((slug, read_task(os.path.join(base, ARCHIVE, arch), arch, "archived")))
+            else:
+                tasks.append((slug, read_task(os.path.join(base, name), name, "active")))
+    out = []
+    for slug, t in tasks:
+        if t:
+            t["slug"] = slug
+            t["project"] = t["project"] or slug
+            out.append(t)
+    out.sort(key=lambda t: t["saved"], reverse=True)
+    return {"root": root, "home": os.path.expanduser("~"), "version": VERSION, "tasks": out}
+
+
+# --- server -------------------------------------------------------------------
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "handoffs/" + VERSION
+    allowed_hosts = LOOPBACK
+    any_ip = False  # listening on 0.0.0.0/::: any IP address is a valid Host
+    token = ""  # empty: read-only
+
+    def host_ok(self):
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host.startswith("["):
+            host = host[1:].split("]", 1)[0]
+        elif host.count(":") == 1:
+            host = host.split(":", 1)[0]
+        if host in self.allowed_hosts:
+            return True
+        if self.any_ip:
+            try:
+                ipaddress.ip_address(host)
+                return True
+            except ValueError:
+                return False
+        return False
+
+    def send(self, code, ctype, body):
+        data = body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                         "connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; "
+                         "frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_json(self, obj, code=200):
+        return self.send(code, "application/json; charset=utf-8", json.dumps(obj, ensure_ascii=False))
+
+    def not_found(self):
+        return self.send(404, "text/plain; charset=utf-8", "not found\n")
+
+    def do_GET(self):  # noqa: N802 (http.server API)
+        if not self.host_ok():
+            return self.send(403, "text/plain; charset=utf-8", "forbidden host\n")
+        path, _, query = self.path.partition("?")
+        q = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
+        key = (handoff_root(), q.get("slug", ""), q.get("status", ""), q.get("task", ""))
+        if path in ("/", "/index.html"):
+            return self.send(200, "text/html; charset=utf-8", PAGE.replace("__TOKEN__", self.token))
+        if path == "/api/tasks":
+            data = collect(handoff_root())
+            data["writable"] = bool(self.token)
+            return self.send_json(data)
+        if path == "/api/search":
+            return self.send_json(search(handoff_root(), q.get("q", "")[:200]))
+        result = None
+        if path == "/api/handoff":
+            result = read_body(*key, name=q.get("file", ""))
+        elif path == "/api/history":
+            result = history(*key)
+        elif path == "/api/diff":
+            result = diff(*key, q.get("old", ""), q.get("new", ""))
+        elif path == "/api/stale":
+            result = stale(*key)
+        return self.not_found() if result is None else self.send_json(result)
+
+    def do_POST(self):  # noqa: N802 (http.server API)
+        if not self.host_ok():
+            return self.send(403, "text/plain; charset=utf-8", "forbidden host\n")
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host") or ""
+        if not self.token or not hmac.compare_digest(self.headers.get("X-Handoffs-Token") or "", self.token) \
+                or (origin and origin != "http://" + host):
+            return self.send_json({"error": "forbidden"}, 403)
+        path = self.path.split("?", 1)[0]
+        if path not in ("/api/done", "/api/restore"):
+            return self.not_found()
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
+            slug, task = str(body["slug"]), str(body["task"])
+        except (ValueError, KeyError, TypeError):
+            return self.send_json({"error": "bad request"}, 400)
+        err = move_task(handoff_root(), slug, task, archive=path == "/api/done")
+        return self.send_json({"error": err}, 409) if err else self.send_json({"ok": True})
+
+    def log_message(self, *args):
+        pass
+
+
+def make_server(host, port):
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+
+    class Server(http.server.ThreadingHTTPServer):
+        address_family = family
+        allow_reuse_address = os.name != "nt"  # on Windows it lets two servers share a port
+        daemon_threads = True
+
+    last = None
+    for p in range(port, port + PORT_TRIES) if port else [0]:
+        try:
+            return Server((host, p), Handler)
+        except OSError as e:
+            last = e
+    raise SystemExit("error: cannot listen on %s:%s-%s (%s)" % (host, port, port + PORT_TRIES - 1, last))
+
+
+# --- browser ------------------------------------------------------------------
+
+def spawn(cmd):
+    try:
+        subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except OSError:
+        return False
+
+
+def open_browser(url):
+    """Best effort; returns False when the URL should just be opened by hand."""
+    env = os.environ
+    if env.get("SSH_CONNECTION") or env.get("SSH_TTY"):
+        return False
+    if env.get("TERMUX_VERSION") or "com.termux" in env.get("PREFIX", ""):
+        return bool(shutil.which("termux-open-url")) and spawn(["termux-open-url", url])
+    if sys.platform.startswith("linux"):
+        if env.get("WSL_DISTRO_NAME") or "microsoft" in platform.release().lower():
+            if shutil.which("wslview"):
+                return spawn(["wslview", url])
+            return bool(shutil.which("explorer.exe")) and spawn(["explorer.exe", url])
+        if not (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")):
+            return False  # no GUI: webbrowser could start a text browser in this terminal
+    try:
+        return webbrowser.open(url)
+    except Exception:  # noqa: BLE001 (any browser failure means "open by hand")
+        return False
+
+
+# --- main ---------------------------------------------------------------------
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="handoffs", description="Local web dashboard for claude-handoff tasks.")
+    env_port = os.environ.get("HANDOFF_PORT") or "8765"
+    if not env_port.isdigit() or int(env_port) > 65535:
+        print("error: HANDOFF_PORT must be a port number (0-65535), got %r" % env_port, file=sys.stderr)
+        return 2
+    ap.add_argument("--port", type=int, default=int(env_port),
+                    help="port to listen on; the next %d are tried if it is busy, 0 picks any "
+                         "(default: $HANDOFF_PORT or 8765)" % (PORT_TRIES - 1))
+    ap.add_argument("--host", default="127.0.0.1", help="address to listen on (default: 127.0.0.1)")
+    ap.add_argument("--no-open", action="store_true", help="do not open a browser")
+    ap.add_argument("--read-only", action="store_true", help="disable Done/Restore buttons")
+    ap.add_argument("--json", action="store_true", help="print the task data as JSON and exit")
+    ap.add_argument("--version", action="version", version="handoffs " + VERSION)
+    args = ap.parse_args(argv)
+
+    if args.json:
+        json.dump(collect(handoff_root()), sys.stdout, ensure_ascii=False, indent=2)
+        print()
+        return 0
+
+    host = args.host.strip("[]")
+    if host not in LOOPBACK:
+        Handler.allowed_hosts = LOOPBACK | {host.lower()}
+        Handler.any_ip = host in ("0.0.0.0", "::")
+        print("warning: listening on %s; other machines may reach the dashboard" % host, file=sys.stderr)
+    if not args.read_only:
+        Handler.token = secrets.token_urlsafe(24)
+    server = make_server(host, args.port)
+    port = server.server_address[1]
+    shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    url = "http://%s:%d/" % ("[%s]" % shown if ":" in shown else shown, port)
+    print("handoffs: %s  (root: %s; Ctrl+C to stop)" % (url, handoff_root()), flush=True)
+    if not args.no_open and not open_browser(url):
+        print("open the URL above in a browser", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        server.server_close()
+    return 0
+
+
+PAGE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Handoffs</title>
+<style>
+:root {
+  --bg: #f5f6f8; --card: #fff; --fg: #1d2127; --muted: #6b7581; --line: #e3e6ea;
+  --accent: #2f6fdd; --accentbg: #e8f0fd; --code: #eff1f4; --warn: #b3261e;
+  --arch: #8a6d1d; --archbg: #fbf3dc; --ok: #1e7b3a; --addbg: #dcf5e3; --delbg: #fbe1e1;
+  --repobg: #dfe9fb; --repofg: #1f4fa8; --branchbg: #dcf1e2; --branchfg: #1d6b37;
+  --commitbg: #ece6f7; --commitfg: #5b3f97;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1f22; --card: #2b2d30; --fg: #dfe1e5; --muted: #979ea8; --line: #3a3d42;
+    --accent: #6ea0f5; --accentbg: #2a3a55; --code: #36393e; --warn: #f28b82;
+    --arch: #e0c46c; --archbg: #3d3522; --ok: #81c995; --addbg: #23402b; --delbg: #4a2626;
+    --repobg: #253754; --repofg: #a9c7fa; --branchbg: #22402d; --branchfg: #9fd9b0;
+    --commitbg: #3a3050; --commitfg: #cbb8f2;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 14px; }
+.mono, code, .task { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+h1 { font-size: 22px; margin: 0; }
+.meta { color: var(--muted); font-size: 14px; }
+button, #q { font: inherit; color: var(--fg); background: var(--card);
+  border: 1px solid var(--line); border-radius: 8px; }
+button { cursor: pointer; padding: 7px 12px; font-size: 15px; line-height: 20px; }
+button:disabled { opacity: .5; cursor: default; }
+button.icon { padding: 4px 8px; }
+button.primary { background: var(--accentbg); border-color: transparent; color: var(--accent); font-weight: 500; }
+button.ghost { background: none; border-color: transparent; color: var(--muted); }
+button.ghost:hover { color: var(--fg); }
+#reload { margin-left: auto; }
+.bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 12px; }
+#q { flex: 1 1 200px; padding: 9px 12px; min-width: 0; }
+
+.seg { display: inline-flex; background: var(--code); border-radius: 8px; padding: 2px; }
+.seg button { border: 0; background: none; border-radius: 6px; padding: 5px 12px; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--card); color: var(--fg); box-shadow: 0 1px 2px #0002; }
+.project { margin-bottom: 14px; }
+h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 17px; font-weight: 600; margin: 8px 2px 10px;
+  cursor: pointer; user-select: none; }
+h2 .chev { display: inline-flex; align-self: center; color: var(--muted); }
+h2 .chev svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2.2;
+  stroke-linecap: round; stroke-linejoin: round; transition: transform .15s; }
+.shut svg { transform: rotate(-90deg); }
+.flip svg { transform: rotate(180deg); }
+.ib svg { transition: transform .15s; }
+h2 .ptitle { word-break: break-all; }
+h2 .ppath, h2 .phint { color: var(--muted); font-weight: 400; }
+h2 .count { margin-left: auto; color: var(--muted); font-size: 14px; font-weight: 400; }
+.none { color: var(--muted); font-size: 15px; padding: 4px 2px 8px; }
+.archtoggle { width: 100%; justify-content: center; color: var(--muted); background: none;
+  border-style: dashed; margin: 0 0 10px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 10px; }
+.card.open { border-color: var(--accent); }
+.head { cursor: pointer; }
+.top { display: flex; align-items: baseline; gap: 8px; }
+.task { color: var(--muted); font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.age { margin-left: auto; color: var(--muted); font-size: 14px; white-space: nowrap; }
+.title { font-weight: 600; margin: 2px 0 0; display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.snippet { color: var(--muted); font-size: 14px; font-style: italic; margin-top: 4px; overflow-wrap: anywhere; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.chips:empty { display: none; }
+.chip { font-size: 13px; line-height: 22px; border-radius: 11px; padding: 0 9px; color: var(--muted);
+  background: var(--code); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.chip.warn, .chip.archived { color: var(--arch); background: var(--archbg); }
+.chip.missing { color: var(--warn); background: transparent; box-shadow: inset 0 0 0 1px var(--warn); }
+.chip.ok { color: var(--ok); }
+.crumbs { display: inline-flex; max-width: 100%; font-size: 13px; line-height: 26px; }
+.crumb { display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding: 0 14px 0 18px; margin-left: -6px;
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%, 9px 50%); }
+.crumb:first-child { margin-left: 0; padding-left: 10px; border-radius: 6px 0 0 6px;
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%); }
+.crumb span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumb svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; }
+.crumb.repo { background: var(--repobg); color: var(--repofg); }
+.crumb.branch { background: var(--branchbg); color: var(--branchfg); }
+.crumb.commit { background: var(--commitbg); color: var(--commitfg); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.actions .toggle { margin-left: auto; }
+.actions code { flex-basis: 100%; }
+.card code { font-size: .9em; background: var(--code); border-radius: 4px; padding: 0 4px; word-break: break-word; }
+.actions code { display: block; padding: 4px 8px; overflow-x: auto; white-space: nowrap; }
+.details { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 6px; overflow-wrap: anywhere; }
+.tabs { margin: 6px 0 2px; }
+.md { font-size: 15px; }
+.md h3, .md h4 { font-size: 16px; font-weight: 600; color: var(--accent); margin: 16px 0 4px; }
+.md h5, .md h6 { font-size: 15px; margin: 12px 0 4px; }
+.md p { margin: 4px 0; }
+.md ul, .md ol { margin: 2px 0; padding-left: 20px; }
+.md li { margin: 1px 0; }
+.md pre { background: var(--code); border-radius: 6px; padding: 6px 8px; overflow-x: auto; margin: 4px 0; }
+.md pre code { padding: 0; background: none; white-space: pre; word-break: normal; }
+.md table { border-collapse: collapse; margin: 4px 0; font-size: 14px; display: block; overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--line); padding: 2px 6px; text-align: left; vertical-align: top; }
+.md a { color: var(--accent); }
+.details .file { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+.history { margin: 4px 0; }
+.hrow { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.hrow .age { margin-left: 0; min-width: 52px; }
+.htitle { flex: 1; font-size: 15px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbtns { display: inline-flex; gap: 4px; }
+.hrow button { padding: 5px 10px; font-size: 14px; }
+.hrow button[aria-pressed="true"] { background: var(--accentbg); border-color: transparent; color: var(--accent); }
+.hpanel { padding: 4px 0 8px; border-bottom: 1px solid var(--line); }
+pre.diff { background: var(--code); border-radius: 6px; padding: 6px 8px; font-size: 13px; margin: 4px 0; }
+pre.diff span { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+pre.diff .add { background: var(--addbg); }
+pre.diff .del { background: var(--delbg); }
+pre.diff .hunk { color: var(--accent); }
+.ib { display: inline-flex; align-items: center; gap: 6px; }
+.ib svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.actions button, .dbar button { border-radius: 10px; }
+.dbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 2px; }
+.dbar .tabs { margin: 0; }
+.dbar .act { margin-left: auto; }
+.gitline { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.gitline .chips { margin-top: 0; }
+.toggle { margin-left: auto; }
+.empty, .error { padding: 24px; text-align: center; color: var(--muted); }
+.error { color: var(--warn); }
+footer { margin-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Handoffs</h1>
+    <button id="reload" class="ib ghost" title="Reload" aria-label="Reload"></button>
+  </header>
+  <div class="bar">
+    <input id="q" type="search" placeholder="Search…" aria-label="Search tasks and handoff text" autocomplete="off">
+  </div>
+  <div id="error" class="error" hidden></div>
+  <div id="list"></div>
+  <footer class="meta" id="root"></footer>
+</main>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s);
+const store = {
+  get(k, d) { try { return localStorage.getItem(k) || d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } },
+};
+let collapsed = [];
+try { collapsed = JSON.parse(store.get("handoffs.collapsed", "[]")) || []; } catch (e) { /* ignore */ }
+const state = { q: "", collapsed, archOpen: [] };
+let closeOpen = null;  // closes the card whose details are open (one at a time)
+let data = null;
+let hits = new Map();  // full-text search: task key -> snippet
+const LABEL = "Copy resume";
+const IDLE_DAYS = 14;
+const TOKEN = "__TOKEN__";
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+// Text with `inline code` spans; never parsed as HTML.
+function rich(tag, cls, text) {
+  const e = el(tag, cls);
+  String(text).split(/`([^`]+)`/).forEach((part, i) => {
+    if (part) e.appendChild(i % 2 ? el("code", "", part) : document.createTextNode(part));
+  });
+  return e;
+}
+
+function age(iso) {
+  const t = Date.parse(iso);
+  if (isNaN(t)) return "";
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  if (s < 86400 * 14) return Math.floor(s / 86400) + "d ago";
+  if (s < 86400 * 60) return Math.floor(s / 86400 / 7) + "w ago";
+  return new Date(t).toLocaleDateString();
+}
+
+const sq = (s) => "'" + s.replace(/'/g, "'\\''") + "'";
+function underHome(p) {
+  const h = data && data.home;
+  if (!h || h === "/") return null;
+  if (p === h) return "";
+  return p.startsWith(h + "/") ? p.slice(h.length + 1) : null;
+}
+function tilde(p) {
+  const r = underHome(p);
+  return r === null ? p : r ? "~/" + r : "~";
+}
+function command(t) {
+  const run = 'claude "/pickup @' + t.task + '"';
+  if (!t.project_exists) return run;
+  const r = underHome(t.project);
+  const dir = r === null ? sq(t.project) : r ? "~/" + sq(r) : "~";
+  return "cd " + dir + " && " + run;
+}
+
+async function copy(text, btn, codeEl, label) {
+  const lbl = btn.querySelector(".lbl") || btn;
+  const done = (msg) => { lbl.textContent = msg; setTimeout(() => { lbl.textContent = label; }, 1500); };
+  try {
+    await navigator.clipboard.writeText(text);
+    return done("Copied");
+  } catch (e) { /* fall through */ }
+  try {
+    const a = document.createElement("textarea");
+    a.value = text; a.setAttribute("readonly", ""); a.style.position = "fixed"; a.style.opacity = "0";
+    document.body.appendChild(a); a.select();
+    const ok = document.execCommand("copy");
+    a.remove();
+    if (ok) return done("Copied");
+  } catch (e) { /* fall through */ }
+  codeEl.hidden = false;
+  const r = document.createRange(); r.selectNodeContents(codeEl);
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  done("Selected");
+}
+
+// --- markdown (DOM-built, never innerHTML) ---
+function link(href, text) {
+  const a = el("a", "", text);
+  a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
+  return a;
+}
+
+function inline(parent, text) {
+  const re = /(`[^`]+`)|\*\*([^*]+)\*\*|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()]*[^\s<>().,;:!?'"])/g;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+    if (m[1]) parent.appendChild(el("code", "", m[1].slice(1, -1)));
+    else if (m[2]) { const b = el("strong"); inline(b, m[2]); parent.appendChild(b); }
+    else if (m[3]) parent.appendChild(link(m[4], m[3]));
+    else parent.appendChild(link(m[5], m[5]));
+    last = re.lastIndex;
+  }
+  if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
+  return parent;
+}
+
+const ITEM = /^\s*([-*+]|\d+[.)])\s+(.*)$/;
+const BLOCK = /^(#{1,6}\s|```|~~~|\|)/;
+const indentOf = (l) => l.match(/^\s*/)[0].replace(/\t/g, "    ").length;
+
+function mdList(lines, i, parent) {
+  const base = indentOf(lines[i]);
+  const list = el(/^\s*\d/.test(lines[i]) ? "ol" : "ul");
+  let li = null;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (!l.trim()) {
+      const n = lines[i + 1];
+      if (n !== undefined && n.trim() && indentOf(n) >= base && (ITEM.test(n) || indentOf(n) > base)) { i++; continue; }
+      break;
+    }
+    const ind = indentOf(l), m = l.match(ITEM);
+    if (m && ind <= base + 1 && ind >= base) { li = inline(el("li"), m[2]); list.appendChild(li); i++; }
+    else if (m && ind > base && li) i = mdList(lines, i, li);
+    else if (!m && ind > base && li) { li.appendChild(document.createTextNode(" ")); inline(li, l.trim()); i++; }
+    else break;
+  }
+  parent.appendChild(list);
+  return i;
+}
+
+function cells(l) {
+  return l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+}
+
+function markdown(src, title) {
+  const root = el("div", "md");
+  const lines = src.replace(/\r/g, "").split("\n");
+  let i = 0, m;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+    if ((m = line.match(/^(```|~~~)/))) {
+      const buf = [];
+      for (i++; i < lines.length && !lines[i].startsWith(m[1]); i++) buf.push(lines[i]);
+      i++;
+      const pre = el("pre"); pre.appendChild(el("code", "", buf.join("\n"))); root.appendChild(pre);
+    } else if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
+      i++;
+      if (m[1].length === 1 && m[2].trim() === title) continue;  // the card already shows the title
+      root.appendChild(inline(el("h" + Math.min(6, m[1].length + 2)), m[2]));
+    } else if (ITEM.test(line)) {
+      i = mdList(lines, i, root);
+    } else if (line.trim().startsWith("|")) {
+      const table = el("table");
+      let head = true;
+      for (; i < lines.length && lines[i].trim().startsWith("|"); i++) {
+        if (/^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i]) && lines[i].includes("-")) { head = false; continue; }
+        const tr = el("tr");
+        cells(lines[i]).forEach((c) => tr.appendChild(inline(el(head ? "th" : "td"), c)));
+        table.appendChild(tr);
+      }
+      root.appendChild(table);
+    } else {
+      const buf = [];
+      while (i < lines.length && lines[i].trim() && !BLOCK.test(lines[i]) && !ITEM.test(lines[i])) buf.push(lines[i++].trim());
+      root.appendChild(inline(el("p"), buf.join(" ")));
+    }
+  }
+  return root;
+}
+
+const ICONS = {
+  copy: ["M9 9h11v11H9z", "M5 15V5a2 2 0 0 1 2-2h10"],
+  check: ["M5 12l5 5L20 7"],
+  undo: ["M9 14L4 9l5-5", "M4 9h10a6 6 0 0 1 0 12h-3"],
+  down: ["M6 9l6 6 6-6"],
+  up: ["M6 15l6-6 6 6"],
+  reload: ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"],
+  folder: ["M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
+  branch: ["M6 3v12", "M18 6a3 3 0 1 0 0 .01", "M6 18a3 3 0 1 0 0 .01", "M18 9c0 6-12 3-12 9"],
+  commit: ["M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6", "M3 12h6", "M15 12h6"],
+};
+function icon(name) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true");
+  ICONS[name].forEach((d) => { const p = document.createElementNS(NS, "path"); p.setAttribute("d", d); svg.appendChild(p); });
+  return svg;
+}
+// A button with an icon and an optional short label (label text lives in .lbl).
+function ibtn(name, label, cls) {
+  const b = el("button", "ib" + (cls ? " " + cls : ""));
+  b.appendChild(icon(name));
+  if (label) b.appendChild(el("span", "lbl", label));
+  return b;
+}
+
+function chip(text, cls, title) {
+  const c = el("span", "chip" + (cls ? " " + cls : ""), text);
+  if (title) c.title = title;
+  return c;
+}
+
+const base = (p) => p.replace(/\/+$/, "").split("/").pop();
+const DAY = 86400000;
+
+async function api(path, params) {
+  const r = await fetch("api/" + path + (params ? "?" + new URLSearchParams(params) : ""), { cache: "no-store" });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+async function post(path, body) {
+  const r = await fetch("api/" + path, {
+    method: "POST", cache: "no-store",
+    headers: { "Content-Type": "application/json", "X-Handoffs-Token": TOKEN },
+    body: JSON.stringify(body),
+  });
+  const res = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(res.error || "HTTP " + r.status);
+  return res;
+}
+
+const keyOf = (t) => t.slug + "|" + t.status + "|" + t.task;
+const ref = (t) => ({ slug: t.slug, status: t.status, task: t.task });
+
+function copyButton(label, text) {
+  const btn = ibtn("copy", label, "primary");
+  btn.title = text;
+  const code = el("code", "", text);
+  code.hidden = true;  // shown only when the command has to be copied by hand
+  btn.addEventListener("click", () => copy(text, btn, code, label));
+  return [btn, code];
+}
+
+// warnOnly: problems only, without dirty files (card list); otherwise the full report.
+function staleLine(s, warnOnly) {
+  const box = el("div", "chips stale");
+  if (!s.dir) return box;
+  if (!s.exists) { box.appendChild(chip("work dir missing", "missing", s.dir)); return box; }
+  if (!s.git) return box;
+  if (s.commit_found === false) box.appendChild(chip("handoff commit not found", "missing", "rebased or another repo?"));
+  if (s.commits !== undefined) {
+    const c = chip(s.commits ? s.commits + (s.commits === 1 ? " commit since" : " commits since") : "no new commits", s.commits ? "warn" : "ok");
+    if (s.log && s.log.length) c.title = s.log.join("\n");
+    if (s.commits || !warnOnly) box.appendChild(c);
+  }
+  if (s.ancestor === false) box.appendChild(chip("not an ancestor of HEAD", "missing"));
+  const d = chip(s.dirty_count ? s.dirty_count + " dirty" : "clean", s.dirty_count ? "warn" : "ok");
+  if (s.dirty && s.dirty.length) d.title = s.dirty.join("\n");
+  if (!warnOnly) box.appendChild(d);
+  return box;
+}
+
+// Staleness runs git, so results are cached for a minute.
+const staleCache = new Map();  // key -> {at, promise}
+function stale(t) {
+  const k = keyOf(t) + "|" + t.created, hit = staleCache.get(k);
+  if (hit && Date.now() - hit.at < 60000) return hit.promise;
+  const promise = api("stale", ref(t));
+  promise.catch(() => staleCache.delete(k));
+  staleCache.set(k, { at: Date.now(), promise });
+  return promise;
+}
+
+function diffView(text) {
+  const pre = el("pre", "diff");
+  if (!text) { pre.textContent = "No differences."; return pre; }
+  text.split("\n").forEach((l) => {
+    const cls = l.startsWith("@@") ? "hunk" : l.startsWith("+") && !l.startsWith("+++") ? "add"
+      : l.startsWith("-") && !l.startsWith("---") ? "del" : "";
+    pre.appendChild(el("span", cls, l + "\n"));
+  });
+  return pre;
+}
+
+// Details: git context and staleness, then tabs Latest / History and Done/Restore.
+function details(t, box, action) {
+  const gitBox = el("div", "gitline");
+  const crumbs = gitCrumbs(t);
+  if (crumbs) gitBox.appendChild(crumbs);
+  const tabs = el("div", "seg tabs");
+  const view = el("div");
+  const latest = el("button", "", "Latest");
+  const hist = el("button", "", t.versions > 1 ? "History (" + t.versions + ")" : "History");
+  tabs.appendChild(latest); tabs.appendChild(hist);
+  const bar = el("div", "dbar");
+  bar.appendChild(tabs);
+  if (action) bar.appendChild(action);
+  box.appendChild(gitBox); box.appendChild(bar); box.appendChild(view);
+  const fail = (e) => { view.textContent = "Cannot load (" + e.message + ")."; };
+  const select = (b) => [latest, hist].forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+
+  async function showFile(file) {
+    const h = await api("handoff", Object.assign(ref(t), file ? { file } : {}));
+    view.textContent = "";
+    view.appendChild(markdown(h.body, t.title));
+    view.appendChild(el("div", "file", h.file));
+  }
+  async function showHistory() {
+    const rows = await api("history", ref(t));
+    view.textContent = "";
+    const list = el("div", "history");
+    let current = null;  // the button whose result is open
+    rows.forEach((v, i) => {
+      const row = el("div", "hrow");
+      const when = el("span", "age", age(v.created));
+      when.title = v.created;
+      row.appendChild(when);
+      row.appendChild(rich("span", "htitle", v.title));
+      const btns = el("span", "hbtns");
+      const panel = el("div", "hpanel");
+      panel.hidden = true;
+      // toggle(btn, loader): shows the loader's result right under this row.
+      const toggle = (btn, loader) => {
+        if (current) current.setAttribute("aria-pressed", "false");
+        if (current === btn) { current = null; panel.hidden = true; return; }
+        list.querySelectorAll(".hpanel").forEach((p) => { p.hidden = true; });
+        current = btn;
+        btn.setAttribute("aria-pressed", "true");
+        panel.hidden = false;
+        panel.textContent = "Loading…";
+        loader().then((node) => {
+          panel.textContent = "";
+          panel.appendChild(node);
+          panel.scrollIntoView({ block: "nearest" });
+        }).catch((e) => { panel.textContent = "Cannot load (" + e.message + ")."; });
+      };
+      const open = el("button", "", "View");
+      open.addEventListener("click", () => toggle(open, async () => {
+        const h = await api("handoff", Object.assign(ref(t), { file: v.file }));
+        const box = el("div");
+        box.appendChild(el("div", "file", h.file));
+        box.appendChild(markdown(h.body, null));
+        return box;
+      }));
+      btns.appendChild(open);
+      if (i + 1 < rows.length) {
+        const d = el("button", "", "Diff");
+        d.title = "changes since the previous version";
+        d.addEventListener("click", () => toggle(d, async () => {
+          const r = await api("diff", Object.assign(ref(t), { old: rows[i + 1].file, new: v.file }));
+          const box = el("div");
+          box.appendChild(el("div", "file", r.old + " → " + r.new));
+          box.appendChild(diffView(r.diff));
+          return box;
+        }));
+        btns.appendChild(d);
+      }
+      row.appendChild(btns);
+      list.appendChild(row);
+      list.appendChild(panel);
+    });
+    view.appendChild(list);
+  }
+
+  latest.addEventListener("click", () => { select(latest); showFile("").catch(fail); });
+  hist.addEventListener("click", () => { select(hist); view.textContent = "Loading…"; showHistory().catch(fail); });
+  select(latest);
+  view.textContent = "Loading…";
+  stale(t).then((s) => gitBox.appendChild(staleLine(s, false))).catch(() => {});
+  return showFile("");
+}
+
+function chips(t, stale) {
+  const box = el("div", "chips");
+  if (t.status === "archived") box.appendChild(chip("archived", "archived"));
+  if (!t.project_exists) box.appendChild(chip("path missing", "missing", t.project));
+  const idle = Math.floor((Date.now() - Date.parse(t.created)) / DAY);
+  if (t.status === "active" && idle >= IDLE_DAYS) box.appendChild(chip("idle " + idle + "d", "warn", "not updated for " + idle + " days"));
+  return box;
+}
+
+// Git context as breadcrumb segments: branch > commit (null without git info).
+function gitCrumbs(t) {
+  const crumbs = el("span", "crumbs mono");
+  const seg = (cls, name, text, title) => {
+    const c = el("span", "crumb " + cls);
+    c.appendChild(icon(name));
+    c.appendChild(el("span", "", text));
+    c.title = title;
+    crumbs.appendChild(c);
+  };
+  // Git info only when the project directory itself is the repository.
+  const git = t.git;
+  if (git && t.branch) seg("branch", "branch", t.branch, "branch");
+  if (git && t.commit) seg("commit", "commit", t.commit, "commit at handoff time");
+  return crumbs.childNodes.length ? crumbs : null;
+}
+
+function card(t) {
+  const c = el("div", "card");
+  const head = el("div", "head");
+  const top = el("div", "top");
+  top.appendChild(el("span", "task", "@" + t.task));
+  const a = el("span", "age", age(t.created));
+  a.title = t.created;
+  top.appendChild(a);
+  head.appendChild(top);
+  if (t.title !== t.task) head.appendChild(rich("div", "title", t.title));
+  const snippet = hits.get(keyOf(t));
+  if (snippet) head.appendChild(el("div", "snippet", snippet));
+  const ch = chips(t);
+  head.appendChild(ch);
+  // Only problems here (new commits, missing dirs…); the full report is in Details.
+  if (t.status === "active" && t.project_exists) {
+    stale(t).then((s) => { staleLine(s, true).childNodes.forEach((n) => ch.appendChild(n.cloneNode(true))); }).catch(() => {});
+  }
+  c.appendChild(head);
+  const box = el("div", "details");
+  box.hidden = true;
+
+  const row = el("div", "actions");
+  const [copyBtn, code] = copyButton(LABEL, command(t));
+  copyBtn.title = "Copy: " + command(t);
+  row.appendChild(copyBtn);
+
+  // Done/Restore lives in Details, away from the main button.
+  let act = null;
+  if (data.writable) {
+    const done = t.status === "active";
+    act = ibtn(done ? "check" : "undo", done ? "Done" : "Restore", "act");
+    act.title = done ? "archive the task (like /handoff @" + t.task + " done)" : "move the task back to active";
+    act.addEventListener("click", async () => {
+      if (!confirm((done ? "Archive" : "Restore") + " @" + t.task + "?")) return;
+      act.disabled = true;
+      try { await post(done ? "done" : "restore", { slug: t.slug, task: t.task }); await load(); }
+      catch (e) { act.disabled = false; alert("Failed: " + e.message); }
+    });
+  }
+
+  const more = ibtn("down", "Details", "toggle");
+  more.title = "Details";
+  more.setAttribute("aria-label", "Details");
+  more.setAttribute("aria-expanded", "false");
+  let loaded = false;
+  const toggle = () => {
+    const open = box.hidden;
+    if (open) { if (closeOpen && closeOpen !== close) closeOpen(); closeOpen = close; }
+    else if (closeOpen === close) closeOpen = null;
+    if (open && !loaded) { loaded = true; details(t, box, act).catch((e) => { box.textContent = "Cannot load (" + e.message + ")."; }); }
+    box.hidden = !open;
+    c.classList.toggle("open", open);
+    more.classList.toggle("flip", open);
+    more.setAttribute("aria-expanded", String(open));
+  };
+  const close = () => { if (!box.hidden) toggle(); };
+  more.addEventListener("click", toggle);
+  head.addEventListener("click", (e) => { if (!getSelection().toString()) toggle(); });
+  row.appendChild(more);
+  row.appendChild(code);
+  c.appendChild(row);  // buttons stay above the (long) details
+  c.appendChild(box);
+  return c;
+}
+
+function projectName(p) {
+  const t = tilde(p);
+  return t === "~" ? "~" : base(t) || t;
+}
+
+function render() {
+  if (!data) return;
+  closeOpen = null;
+  const all = data.tasks;
+  const projects = [...new Set(all.map((t) => t.project))];  // tasks are newest first
+
+  const q = state.q.trim().toLowerCase();
+  const matches = (t) => !q || hits.has(keyOf(t)) ||
+    [t.task, t.title, t.goal, t.project].some((f) => f && f.toLowerCase().includes(q));
+  $("#root").textContent = "Root: " + tilde(data.root) + " · handoffs " + data.version;
+
+  const list = $("#list");
+  list.textContent = "";
+  let shownAny = false;
+  projects.forEach((project) => {
+    const tasks = all.filter((t) => t.project === project && matches(t));
+    if (!tasks.length) return;
+    shownAny = true;
+    const act = tasks.filter((t) => t.status === "active");
+    const arch = tasks.filter((t) => t.status === "archived");
+    const collapsed = !q && state.collapsed.includes(project);
+
+    const sec = el("section", "project");
+    const h = el("h2");
+    h.title = project;
+    const chev = el("span", "chev" + (collapsed ? " shut" : ""));
+    chev.appendChild(icon("down"));
+    h.appendChild(chev);
+    // One path, parent dimmed: "~/" + bold "claude-handoff".
+    const full = tilde(project), name = projectName(project);
+    const ptitle = el("span", "ptitle");
+    if (full.length > name.length) ptitle.appendChild(el("span", "ppath", full.slice(0, full.length - name.length)));
+    ptitle.appendChild(el("span", "pname", name));
+    if (full === "~") ptitle.appendChild(el("span", "phint", " (home)"));
+    h.appendChild(ptitle);
+    if (!tasks[0].project_exists) h.appendChild(chip("path missing", "missing"));
+    h.appendChild(el("span", "count", act.length + " active"));
+    h.addEventListener("click", () => {
+      const i = state.collapsed.indexOf(project);
+      if (i >= 0) state.collapsed.splice(i, 1); else state.collapsed.push(project);
+      store.set("handoffs.collapsed", JSON.stringify(state.collapsed));
+      render();
+    });
+    sec.appendChild(h);
+    if (!collapsed) {
+      act.forEach((t) => sec.appendChild(card(t)));
+      if (!act.length) sec.appendChild(el("div", "none", "No active tasks."));
+      if (arch.length) {
+        const open = !!q || state.archOpen.includes(project);
+        const tog = ibtn("down", "Archived (" + arch.length + ")", "archtoggle" + (open ? "" : " shut"));
+        tog.title = "tasks finished with Done or /handoff @task done";
+        tog.addEventListener("click", () => {
+          const i = state.archOpen.indexOf(project);
+          if (i >= 0) state.archOpen.splice(i, 1); else state.archOpen.push(project);
+          render();
+        });
+        sec.appendChild(tog);
+        if (open) arch.forEach((t) => sec.appendChild(card(t)));
+      }
+    }
+    list.appendChild(sec);
+  });
+  if (!shownAny) {
+    list.appendChild(el("div", "empty", all.length ? "No tasks match the search." : "No handoffs yet. Save one with /handoff."));
+  }
+}
+
+async function load() {
+  try {
+    const r = await fetch("api/tasks", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const next = await r.json();
+    $("#error").hidden = true;
+    const same = data && JSON.stringify(next) === JSON.stringify(data);
+    data = next;
+    if (!same) render();
+  } catch (e) {
+    $("#error").textContent = "Cannot reach the handoffs server (" + e.message + "). Is it still running?";
+    $("#error").hidden = false;
+  }
+}
+
+$("#reload").appendChild(icon("reload"));
+$("#reload").addEventListener("click", load);
+let searchTimer = 0;
+$("#q").addEventListener("input", (e) => {
+  state.q = e.target.value;
+  clearTimeout(searchTimer);
+  if (state.q.trim().length < 2) { hits = new Map(); render(); return; }
+  render();
+  searchTimer = setTimeout(async () => {
+    const q = state.q;
+    try {
+      const res = await api("search", { q });
+      if (q !== state.q) return;
+      hits = new Map(res.map((h) => [keyOf(h), h.snippet]));
+      render();
+    } catch (err) { /* keep the local filter */ }
+  }, 300);
+});
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+setInterval(() => { if (!document.hidden) load(); }, 30000);
+load();
+</script>
+</body>
+</html>
+"""
+
+if __name__ == "__main__":
+    sys.exit(main())

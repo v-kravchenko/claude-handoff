@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-09-26
+
+### Added
+
+- `handoffs`: a local web dashboard with the tasks of every project, grouped
+  by project with archived tasks folded away. Each card shows the task,
+  title, age and warning chips (archived, idle, new commits), with a button
+  that copies
+  `cd <project> && claude "/pickup @task"`. *Details* shows the branch,
+  commit, staleness report and the whole latest handoff, plus a history of
+  versions with diffs. *Done* and *Restore* archive and restore tasks (off with
+  `--read-only`). A search box filters the cards and searches the full
+  handoff text. Run it in a terminal; it serves
+  `http://127.0.0.1:8765/`, opens a browser where it can, and stops with
+  Ctrl+C. It needs python3 (standard library only). `install.sh` installs it
+  into `~/.local/bin` (`$PREFIX/bin` on Termux, or `HANDOFF_BIN_DIR`).
+
 ## [1.0.2] - 2026-09-26
 
 ### Added
@@ -56,6 +73,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.1.0]: https://github.com/v-kravchenko/claude-handoff/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/v-kravchenko/claude-handoff/releases/tag/v1.0.0

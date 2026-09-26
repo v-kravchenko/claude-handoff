@@ -267,5 +267,243 @@ lacks "$HANDOFF_ROOT/homex" "a sibling of \$HOME is not treated as home"
 HANDOFF_ROOT="$TMP/r2" run / new t
 has "$TMP/r2/root/t/" "the filesystem root maps to root"
 
+# --- dashboard (bin/handoffs) ----------------------------------------------
+DASH="$(cd "$(dirname "$SCRIPT")/../.." && pwd -P)/bin/handoffs"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "skip: dashboard tests (no python3)"
+else
+  D="$TMP/dash"
+  mkdir -p "$D/home~app/alpha" "$D/home~app/empty" "$D/home~app/_archive/old" "$D/other/bare" "$D/.hidden/x"
+  cat >"$D/home~app/alpha/2026-09-25_101500.md" <<'EOF'
+---
+title: first
+---
+EOF
+  cat >"$D/home~app/alpha/2026-09-26_173557.md" <<EOF
+---
+project: $P
+repo: none
+branch: none
+created: 2026-09-26 17:35:57 +0300
+title: Fix "quotes" & \`code\` — кирилиця
+---
+
+# Fix
+
+## Goal
+Line one of the goal
+continues here.
+
+Second paragraph is not shown.
+
+## State
+- 1. not a next step
+
+## Next steps
+1. First step
+   wraps here.
+2. Second
+3. Third
+4. Fourth
+5. Fifth
+
+## Verify
+- nope
+EOF
+  printf -- '---\nproject: /no/such/dir\ntitle: archived one\n---\n## Goal\n%s\n' "$(printf 'word %.0s' {1..80})" \
+    >"$D/home~app/_archive/old/2026-09-01_080000.md"
+  printf 'no frontmatter here\n' >"$D/other/bare/2026-09-02_090000.md"
+  printf -- '---\ntitle: hidden\n---\n' >"$D/.hidden/x/2026-09-03_090000.md"
+
+  OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --json 2>&1) || fail "handoffs --json failed"
+  # jcheck EXPR MSG: EXPR is Python over d (the JSON) and t (task by name).
+  jcheck() {
+    if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); t={x["task"]:x for x in d["tasks"]}; sys.exit(0 if eval(sys.argv[2]) else 1)' "$OUT" "$1" 2>/dev/null
+    then ok; else fail "$2"; fi
+  }
+  jcheck 'sorted(t) == ["alpha", "bare", "old"]' "tasks: dirs without .md and dot dirs are skipped"
+  # shellcheck disable=SC2016 # backticks are part of the expected title
+  jcheck 't["alpha"]["title"] == "Fix \"quotes\" & `code` — кирилиця"' "title with quotes and Cyrillic"
+  jcheck 't["alpha"]["versions"] == 2 and t["alpha"]["status"] == "active"' "versions and status"
+  jcheck 't["alpha"]["created"] == "2026-09-26T17:35:57+03:00"' "created is ISO 8601"
+  jcheck 't["alpha"]["goal"] == "Line one of the goal continues here."' "goal is the first paragraph"
+  jcheck 't["alpha"]["next"] == ["First step wraps here.", "Second", "Third"] and t["alpha"]["next_more"] == 2' "next steps: 3 items plus the rest"
+  jcheck 't["alpha"]["project"] == "'"$P"'" and t["alpha"]["project_exists"]' "project path from frontmatter"
+  jcheck 't["alpha"]["repo"] == "" and t["alpha"]["branch"] == "" and t["alpha"]["slug"] == "home~app"' "missing repo/branch are empty"
+  jcheck 't["old"]["status"] == "archived" and not t["old"]["project_exists"]' "archived task, missing path"
+  jcheck 'len(t["old"]["goal"]) <= 201 and t["old"]["goal"].endswith("…")' "long goal is truncated"
+  jcheck 't["bare"]["title"] == "bare" and t["bare"]["project"] == "other" and t["bare"]["created"].startswith("2026-09-02T09:00")' "no frontmatter: task name, slug, date from file name"
+  jcheck '[x["task"] for x in d["tasks"]] == ["alpha", "bare", "old"]' "newest first"
+
+  OUT=$(HANDOFF_ROOT="$TMP/none" python3 "$DASH" --json 2>&1)
+  jcheck 'd["tasks"] == []' "missing root gives no tasks"
+  jcheck 'd["home"] and d["root"].endswith("none")' "reports home and root"
+
+  # Git projects: the project dir is the repo (reported) vs. a nested repo (not).
+  G="$TMP/gitproj"; mkdir -p "$G/nested"
+  git -C "$G" init -q && git -C "$G" commit -q --allow-empty -m one
+  GC=$(git -C "$G" rev-parse HEAD)
+  git -C "$G" commit -q --allow-empty -m two
+  git -C "$G/nested" init -q && git -C "$G/nested" commit -q --allow-empty -m n
+  mkdir -p "$D/gitproj/repo" "$D/gitproj/nest"
+  printf -- '---\nproject: %s\nrepo: %s\nbranch: main\ncommit: %s\ntitle: r\n---\n' "$G" "$G" "$GC" \
+    >"$D/gitproj/repo/2026-09-04_090000.md"
+  printf -- '---\nproject: %s\nrepo: %s/nested\nbranch: main\ncommit: %s\ntitle: n\n---\n' "$G" "$G" "$GC" \
+    >"$D/gitproj/nest/2026-09-04_090000.md"
+  # A worktree: repo is the main checkout, project and dir are the worktree.
+  W="$TMP/gitwt"
+  git -C "$G" worktree add -q -b wt "$W" 2>/dev/null
+  W=$(cd "$W" && pwd -P)
+  mkdir -p "$D/gitproj/wt"
+  printf -- '---\nproject: %s\ndir: %s\nrepo: %s\nbranch: wt\ncommit: %s\ntitle: w\n---\n' "$W" "$W" "$G" "$GC" \
+    >"$D/gitproj/wt/2026-09-04_090000.md"
+  OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --json 2>&1)
+  jcheck 't["repo"]["git"] and t["wt"]["git"] and not t["nest"]["git"] and not t["alpha"]["git"]' \
+    "git info only for the project repo or its worktree"
+
+  # HTTP: start on a free port, probe, stop.
+  PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+  HANDOFF_ROOT="$D" python3 "$DASH" --no-open --port "$PORT" >"$TMP/dash.log" 2>&1 &
+  DPID=$!
+  OUT=$(python3 - "$PORT" "$D" <<'EOF'
+import http.client, sys, time
+port = int(sys.argv[1])
+def get(path, host):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.request("GET", path, headers={"Host": host})
+    r = c.getresponse(); body = r.read().decode()
+    return r.status, body
+for _ in range(50):
+    try:
+        get("/", "127.0.0.1"); break
+    except OSError:
+        time.sleep(0.1)
+h = "127.0.0.1:%d" % port
+s, b = get("/", h); print("root", s, "<title>Handoffs</title>" in b)
+s, b = get("/api/tasks", h); print("api", s, '"alpha"' in b)
+s, b = get("/api/tasks", "localhost:%d" % port); print("localhost", s)
+s, b = get("/api/tasks", "evil.example:%d" % port); print("evil", s)
+s, b = get("/home~app/alpha/2026-09-26_173557.md", h); print("file", s)
+s, b = get("/api/handoff?slug=home~app&status=active&task=alpha", h); print("body", s, "## Next steps" in b, "title:" not in b)
+s, b = get("/api/handoff?slug=home~app&status=archived&task=old", h); print("archbody", s)
+s, b = get("/api/handoff?slug=home~app&status=active&task=_archive", h); print("archdir", s)
+s, b = get("/api/handoff?slug=..&status=active&task=root", h); print("traversal", s)
+s, b = get("/api/handoff?slug=home~app&status=active&task=empty", h); print("nomd", s)
+import json, re
+A = "slug=home~app&status=active&task=alpha"
+s, b = get("/api/history?" + A, h); v = json.loads(b); print("history", s, [x["file"] for x in v] == ["2026-09-26_173557.md", "2026-09-25_101500.md"])
+s, b = get("/api/handoff?" + A + "&file=2026-09-25_101500.md", h); print("version", s)
+s, b = get("/api/handoff?" + A + "&file=../../x.md", h); print("badfile", s)
+s, b = get("/api/diff?" + A + "&old=2026-09-25_101500.md&new=2026-09-26_173557.md", h); print("diff", s, "+## Next steps" in json.loads(b)["diff"])
+s, b = get("/api/diff?" + A + "&old=nope.md&new=2026-09-26_173557.md", h); print("baddiff", s)
+s, b = get("/api/stale?" + A, h); d = json.loads(b); print("stale", s, d["exists"], d["git"])
+s, b = get("/api/stale?slug=home~app&status=archived&task=old", h); print("stalemissing", s, json.loads(b)["exists"])
+s, b = get("/api/stale?slug=gitproj&status=active&task=repo", h); d = json.loads(b); print("gitstale", d["git"], d.get("commits"))
+s, b = get("/api/stale?slug=gitproj&status=active&task=nest", h); d = json.loads(b); print("neststale", d["git"], d.get("commits"))
+s, b = get("/api/stale?slug=gitproj&status=active&task=wt", h); d = json.loads(b); print("wtstale", d["git"], d.get("commits"))
+s, b = get("/api/search?q=SECOND+paragraph", h); print("search", s, [x["task"] for x in json.loads(b)])
+s, b = get("/api/search?q=x", h); print("shortsearch", s, json.loads(b))
+token = re.search(r'const TOKEN = "([^"]*)"', get("/", h)[1]).group(1)
+print("token", len(token) > 10)
+def post(path, body, hdrs):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.request("POST", path, body=json.dumps(body), headers=dict({"Host": h, "Content-Type": "application/json"}, **hdrs))
+    r = c.getresponse(); r.read(); return r.status
+body = {"slug": "home~app", "task": "alpha"}
+print("notoken", post("/api/done", body, {}))
+print("badorigin", post("/api/done", body, {"X-Handoffs-Token": token, "Origin": "http://evil.example"}))
+print("done", post("/api/done", body, {"X-Handoffs-Token": token, "Origin": "http://" + h}))
+print("done-again", post("/api/done", body, {"X-Handoffs-Token": token}))
+print("restore", post("/api/restore", body, {"X-Handoffs-Token": token}))
+open(sys.argv[2] + "/home~app/alpha/.DS_Store", "w").close()
+print("done-extra", post("/api/done", body, {"X-Handoffs-Token": token}))
+print("restore-extra", post("/api/restore", body, {"X-Handoffs-Token": token}))
+print("traversal-post", post("/api/done", {"slug": "..", "task": "home~app"}, {"X-Handoffs-Token": token}))
+EOF
+)
+  kill "$DPID" 2>/dev/null; wait "$DPID" 2>/dev/null
+  has "root 200 True" "GET / serves the page"
+  has "api 200 True" "GET /api/tasks serves the data"
+  has "localhost 200" "Host localhost is allowed"
+  has "evil 403" "a foreign Host header is rejected (DNS rebinding)"
+  has "file 404" "handoff files are not served"
+  has "body 200 True True" "GET /api/handoff returns the body without frontmatter"
+  has "archbody 200" "archived handoff body"
+  has "archdir 404" "_archive is not a task"
+  has "traversal 404" "names outside the listing are rejected"
+  has "nomd 404" "a task dir without handoffs gives 404"
+  has "history 200 True" "history lists versions, newest first"
+  has "version 200" "an older version can be read"
+  has "badfile 404" "a file outside the version list is rejected"
+  has "diff 200 True" "diff between versions"
+  has "baddiff 404" "diff of an unknown version is rejected"
+  has "stale 200 True False" "staleness of a non-git work dir"
+  has "stalemissing 200 False" "staleness reports a missing work dir"
+  has "gitstale True 1" "staleness counts commits in the project repo"
+  has "neststale True None" "a nested repo's commit is not compared"
+  has "wtstale True 1" "staleness works in a worktree"
+  has "search 200 ['alpha']" "full-text search finds text beyond the summary"
+  has "shortsearch 200 []" "one-letter search returns nothing"
+  has "token True" "the page carries a write token"
+  has "notoken 403" "POST without the token is rejected"
+  has "badorigin 403" "POST from a foreign Origin is rejected"
+  has "done 200" "done archives the task"
+  has "done-again 409" "done of an archived task fails"
+  has "restore 200" "restore brings the task back"
+  has "done-extra 200" "done works with a stray file in the task dir"
+  has "restore-extra 200" "restore works with a stray file in the task dir"
+  has "traversal-post 409" "POST names outside the listing are rejected"
+  assert "done/restore round trip keeps both versions" [ "$(find "$D/home~app/alpha" -name '*.md' | wc -l | tr -d ' ')" -eq 2 ]
+  assert "restore removes the archive entry" [ ! -d "$D/home~app/_archive/alpha" ]
+
+  # --read-only: no token, POST refused.
+  HANDOFF_ROOT="$D" python3 "$DASH" --no-open --read-only --host 0.0.0.0 --port "$PORT" >"$TMP/dash.log" 2>&1 &
+  DPID=$!
+  OUT=$(python3 - "$PORT" <<'EOF'
+import http.client, json, sys, time
+port = int(sys.argv[1]); h = "127.0.0.1:%d" % port
+def req(method, path, body=None, hdrs=None):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.request(method, path, body=body, headers=dict({"Host": h}, **(hdrs or {})))
+    r = c.getresponse(); return r.status, r.read().decode()
+for _ in range(50):
+    try:
+        req("GET", "/"); break
+    except OSError:
+        time.sleep(0.1)
+print("ro-writable", json.loads(req("GET", "/api/tasks")[1])["writable"])
+print("ro-token", 'const TOKEN = ""' in req("GET", "/")[1])
+print("ro-post", req("POST", "/api/done", '{"slug":"home~app","task":"alpha"}', {"X-Handoffs-Token": ""})[0])
+print("ro-ip", req("GET", "/api/tasks", hdrs={"Host": "192.168.1.5:%d" % port})[0])
+print("ro-name", req("GET", "/api/tasks", hdrs={"Host": "evil.example:%d" % port})[0])
+EOF
+)
+  kill "$DPID" 2>/dev/null; wait "$DPID" 2>/dev/null
+  has "ro-writable False" "--read-only reports writable: false"
+  has "ro-token True" "--read-only page has no token"
+  has "ro-post 403" "--read-only refuses POST"
+  has "ro-ip 200" "on 0.0.0.0 a LAN IP Host is allowed"
+  has "ro-name 403" "on 0.0.0.0 a host name is still rejected"
+  OUT=$(HANDOFF_PORT=abc python3 "$DASH" --json 2>&1); rc=$?
+  assert "a bad HANDOFF_PORT exits with 2" [ "$rc" -eq 2 ]
+  has "HANDOFF_PORT must be a port number" "a bad HANDOFF_PORT gives a clear error"
+  OUT=$(cat "$TMP/dash.log")
+  has "http://127.0.0.1:$PORT/" "prints the URL"
+
+  # install.sh puts the command into HANDOFF_BIN_DIR and removes only its own file.
+  INST="$(dirname "$DASH")/../install.sh"
+  OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/bin" "$INST" 2>&1)
+  assert "install copies the dashboard" [ -x "$TMP/bin/handoffs" ]
+  assert "install copies the skills" [ -f "$TMP/cfg/skills/handoff/handoff.sh" ]
+  OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/bin" "$INST" --uninstall 2>&1)
+  assert "uninstall removes the dashboard" [ ! -e "$TMP/bin/handoffs" ]
+  echo "#!/bin/sh" >"$TMP/bin/handoffs"
+  OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/bin" "$INST" --uninstall 2>&1)
+  assert "uninstall keeps a foreign handoffs command" [ -f "$TMP/bin/handoffs" ]
+  OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/bin" "$INST" 2>&1)
+  has "is not ours; skipped" "install warns about a foreign handoffs command"
+  assert "install keeps a foreign handoffs command" grep -qx '#!/bin/sh' "$TMP/bin/handoffs"
+fi
+
 echo "passed: $PASS, failed: $FAIL"
 [[ $FAIL -eq 0 ]]

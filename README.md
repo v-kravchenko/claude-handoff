@@ -27,10 +27,13 @@ machines, or to park a task and come back to it days later.
   commit are recorded, and nested repositories inside a project work.
 - **Chained history.** Each new handoff reads the previous one for its task
   and carries over what is still relevant. The last 10 per task are kept.
+- **Dashboard.** `handoffs` shows every task of every project in the
+  browser, with a one-click resume command.
 - **No secrets.** The skill is told never to write tokens or credentials,
   only where they live.
 - **Small and dependency-free.** One Bash script: bash 3.2+ and git. Works
-  on Linux, macOS and Termux (Android).
+  on Linux, macOS and Termux (Android). The optional dashboard needs only
+  python3.
 
 ## Installation
 
@@ -54,10 +57,15 @@ This gives you the short commands `/handoff` and `/pickup`:
 git clone https://github.com/v-kravchenko/claude-handoff.git
 cd claude-handoff
 ./install.sh              # copies skills to ~/.claude/skills (respects CLAUDE_CONFIG_DIR)
+                          # and the `handoffs` dashboard to ~/.local/bin
 ```
 
 To update, run `git pull && ./install.sh`. To remove, run
 `./install.sh --uninstall`; saved handoffs are kept.
+
+The dashboard command goes to `~/.local/bin` (`$PREFIX/bin` on Termux); set
+`HANDOFF_BIN_DIR` to choose another directory. Plugin users can run
+`bin/handoffs` from a clone.
 
 Start a new Claude Code session after installing.
 
@@ -96,6 +104,52 @@ Proposed first step: fix the clock skew in refreshToken(). Proceed?
 
 Both skills set `disable-model-invocation: true`, so they run only when you
 type them.
+
+## Dashboard
+
+`handoffs` is a terminal command that shows every task of every project in
+the browser:
+
+```text
+$ handoffs
+handoffs: http://127.0.0.1:8765/  (root: ~/.claude/handoffs; Ctrl+C to stop)
+```
+
+Tasks are grouped by project (the directory the handoffs belong to); each
+project section shows its active tasks and folds its archived ones under
+*Archived (N)*. Sections collapse with a tap. Each card shows the task,
+its title and age, and chips only when something needs attention
+(archived, idle for 14+ days, new commits since the handoff, a missing
+work directory). Only one card is expanded at a time. Its buttons:
+
+- **Copy resume** copies the resume command, `cd ~/'project' && claude "/pickup @task"`.
+- **Details** (or a tap on the card) shows the branch and commit, what
+  changed in the work repository since the handoff (new commits,
+  uncommitted files, a missing commit) and renders the whole latest
+  handoff. The *History* tab lists every saved version, opens any of them
+  and shows the diff against the previous one.
+- **Done** (in *Details*) archives an active task and **Restore** brings an
+  archived one back, like `/handoff @task done` and the *Restore* option of
+  `/pickup`.
+
+The search box filters by task, title and goal at once, and also searches
+the full text of the latest handoffs. The page reads the handoff files on
+every request and refreshes itself every 30 seconds, so it is never out of
+date.
+
+| Option | Meaning |
+| --- | --- |
+| `--port N` | Port to listen on (default `$HANDOFF_PORT` or `8765`); if it is busy, the next nine are tried. `0` picks any free port. |
+| `--host ADDR` | Address to listen on (default `127.0.0.1`). |
+| `--no-open` | Only print the URL. |
+| `--read-only` | Hide the *Done* and *Restore* buttons and refuse changes. |
+| `--json` | Print the task data as JSON and exit. |
+
+The browser opens with `open` (macOS), `xdg-open` (Linux desktop),
+`wslview` or `explorer.exe` (WSL), the default browser (Windows) or
+`termux-open-url` (Termux). Over SSH or without a display, the command only
+prints the URL. On Termux, keep Termux in the foreground for the browser to
+open, or tap the printed URL.
 
 ## How it works
 
@@ -136,6 +190,8 @@ archive.
 | --- | --- | --- |
 | `HANDOFF_ROOT` | `${CLAUDE_CONFIG_DIR:-~/.claude}/handoffs` | Where handoffs are stored. |
 | `HANDOFF_KEEP` | `10` | Handoffs kept per task (a positive integer; anything else means 10). Older ones are deleted when you save. |
+| `HANDOFF_PORT` | `8765` | Default port of the `handoffs` dashboard. |
+| `HANDOFF_BIN_DIR` | `~/.local/bin` (`$PREFIX/bin` on Termux) | Where `install.sh` puts `handoffs`. |
 
 Set them in your shell profile or in the `env` block of
 `~/.claude/settings.json`.
@@ -146,6 +202,8 @@ Set them in your shell profile or in the `env` block of
 - bash 3.2 or newer (macOS system bash works)
 - git 2.31 or newer (only needed for git metadata; plain directories work
   without it)
+- python 3.8 or newer, only for the `handoffs` dashboard (standard library
+  only; on Termux: `pkg install python`)
 
 ## Privacy and security
 
@@ -155,15 +213,26 @@ Set them in your shell profile or in the `env` block of
   sharing it, because it summarizes your conversation.
 - The skill may only run its own script (`allowed-tools` is scoped to
   `handoff.sh`) and write the handoff file.
+- The dashboard listens on `127.0.0.1` only and reads nothing but handoff
+  files of listed tasks. It rejects requests whose `Host` header is not
+  local, which blocks DNS-rebinding attacks from web pages. Its only changes
+  are *Done* and *Restore*: they need a random token that is embedded in the
+  page at startup and sent in a custom header, so other web pages cannot
+  trigger them. `--read-only` turns them off. Other programs on the same
+  machine (on Android, other apps) are not web pages: while the dashboard
+  runs they can read it and, unless it is `--read-only`, also use *Done*
+  and *Restore*.
 
 ## Development
 
 ```bash
 tests/test.sh                                            # end-to-end tests in a temp dir
 shellcheck skills/handoff/handoff.sh install.sh tests/test.sh
+HANDOFF_ROOT=$(mktemp -d) bin/handoffs --no-open         # dashboard on an empty root
 ```
 
-CI runs shellcheck and the tests on Ubuntu and on macOS (bash 3.2).
+CI runs shellcheck and the tests on Ubuntu and on macOS (bash 3.2). The
+dashboard tests are skipped when python3 is missing.
 
 To try the script by hand without touching your real handoffs:
 
