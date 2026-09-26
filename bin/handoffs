@@ -3,7 +3,7 @@
 
 Usage: handoffs [--port N] [--host ADDR] [--no-open] [--json] [--version]
 
-Serves a read-only page with every task of every project under the handoff
+Serves a page with every task of every project under the handoff
 root ($HANDOFF_ROOT, else $CLAUDE_CONFIG_DIR/handoffs, else ~/.claude/handoffs).
 Data is read from disk on every request. Python 3.8+, standard library only.
 """
@@ -26,12 +26,11 @@ import sys
 import urllib.parse
 import webbrowser
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 ARCHIVE = "_archive"
 GOAL_MAX = 200
 NEXT_MAX = 3
 PORT_TRIES = 10
-GIT_TIMEOUT = 3
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -222,48 +221,6 @@ def diff(root, slug, status, task, old, new):
     return {"old": old, "new": new, "diff": "\n".join(lines)}
 
 
-def git(cwd, *args):
-    try:
-        r = subprocess.run(("git",) + args, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.DEVNULL, timeout=GIT_TIMEOUT, universal_newlines=True)
-        return r.returncode, r.stdout
-    except (OSError, subprocess.SubprocessError):
-        return -1, ""
-
-
-def stale(root, slug, status, task):
-    """What changed in the project repository since the latest handoff. Only the
-    project directory counts: a repository nested inside it is not reported."""
-    d = task_dir(root, slug, status, task)
-    name = pick(versions(d), "")
-    if not name:
-        return None
-    fields, _ = parse_frontmatter(read_lines(d, name) or [])
-    where = fields.get("project", "")
-    out = {"dir": where, "exists": bool(where) and os.path.isdir(where), "git": False}
-    if not out["exists"] or not shutil.which("git"):
-        return out
-    rc, top = git(where, "rev-parse", "--show-toplevel")
-    if rc != 0 or os.path.realpath(top.strip()) != os.path.realpath(where):
-        return out
-    out["git"] = True
-    commit = fields.get("commit", "") if own_repo(fields) else ""
-    if commit and commit != "none":
-        rc, _ = git(where, "cat-file", "-e", commit + "^{commit}")
-        out["commit_found"] = rc == 0
-        if rc == 0:
-            _, n = git(where, "rev-list", "--count", commit + "..HEAD")
-            out["commits"] = int(n.strip() or 0)
-            _, log = git(where, "log", "--oneline", "-n", "10", commit + "..HEAD")
-            out["log"] = log.splitlines()
-            rc, _ = git(where, "merge-base", "--is-ancestor", commit, "HEAD")
-            out["ancestor"] = rc == 0
-    _, st = git(where, "status", "--short")
-    out["dirty"] = st.splitlines()[:20]
-    out["dirty_count"] = len(st.splitlines())
-    return out
-
-
 def search(root, query):
     """Tasks whose latest handoff contains `query` (case-insensitive), with a snippet."""
     q = query.strip().lower()
@@ -404,8 +361,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             result = history(*key)
         elif path == "/api/diff":
             result = diff(*key, q.get("old", ""), q.get("new", ""))
-        elif path == "/api/stale":
-            result = stale(*key)
         return self.not_found() if result is None else self.send_json(result)
 
     def do_POST(self):  # noqa: N802 (http.server API)
@@ -537,7 +492,7 @@ PAGE = r"""<!doctype html>
 :root {
   --bg: #f5f6f8; --card: #fff; --fg: #1d2127; --muted: #6b7581; --line: #e3e6ea;
   --accent: #2f6fdd; --accentbg: #e8f0fd; --code: #eff1f4; --warn: #b3261e;
-  --arch: #8a6d1d; --archbg: #fbf3dc; --ok: #1e7b3a; --addbg: #dcf5e3; --delbg: #fbe1e1;
+  --arch: #8a6d1d; --archbg: #fbf3dc; --addbg: #dcf5e3; --delbg: #fbe1e1;
   --repobg: #dfe9fb; --repofg: #1f4fa8; --branchbg: #dcf1e2; --branchfg: #1d6b37;
   --commitbg: #ece6f7; --commitfg: #5b3f97;
 }
@@ -545,7 +500,7 @@ PAGE = r"""<!doctype html>
   :root {
     --bg: #1e1f22; --card: #2b2d30; --fg: #dfe1e5; --muted: #979ea8; --line: #3a3d42;
     --accent: #6ea0f5; --accentbg: #2a3a55; --code: #36393e; --warn: #f28b82;
-    --arch: #e0c46c; --archbg: #3d3522; --ok: #81c995; --addbg: #23402b; --delbg: #4a2626;
+    --arch: #e0c46c; --archbg: #3d3522; --addbg: #23402b; --delbg: #4a2626;
     --repobg: #253754; --repofg: #a9c7fa; --branchbg: #22402d; --branchfg: #9fd9b0;
     --commitbg: #3a3050; --commitfg: #cbb8f2;
   }
@@ -605,7 +560,6 @@ h2 .count { margin-left: auto; color: var(--muted); font-size: 14px; font-weight
   background: var(--code); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .chip.warn, .chip.archived { color: var(--arch); background: var(--archbg); }
 .chip.missing { color: var(--warn); background: transparent; box-shadow: inset 0 0 0 1px var(--warn); }
-.chip.ok { color: var(--ok); }
 .crumbs { display: inline-flex; max-width: 100%; font-size: 13px; line-height: 26px; }
 .crumb { display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding: 0 14px 0 18px; margin-left: -6px;
   clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%, 9px 50%); }
@@ -656,8 +610,6 @@ pre.diff .hunk { color: var(--accent); }
 .dbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 2px; }
 .dbar .tabs { margin: 0; }
 .dbar .act { margin-left: auto; }
-.gitline { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-.gitline .chips { margin-top: 0; }
 .toggle { margin-left: auto; }
 .empty, .error { padding: 24px; text-align: center; color: var(--muted); }
 .error { color: var(--warn); }
@@ -914,36 +866,6 @@ function copyButton(label, text) {
   return [btn, code];
 }
 
-// warnOnly: problems only, without dirty files (card list); otherwise the full report.
-function staleLine(s, warnOnly) {
-  const box = el("div", "chips stale");
-  if (!s.dir) return box;
-  if (!s.exists) { box.appendChild(chip("work dir missing", "missing", s.dir)); return box; }
-  if (!s.git) return box;
-  if (s.commit_found === false) box.appendChild(chip("handoff commit not found", "missing", "rebased or another repo?"));
-  if (s.commits !== undefined) {
-    const c = chip(s.commits ? s.commits + (s.commits === 1 ? " commit since" : " commits since") : "no new commits", s.commits ? "warn" : "ok");
-    if (s.log && s.log.length) c.title = s.log.join("\n");
-    if (s.commits || !warnOnly) box.appendChild(c);
-  }
-  if (s.ancestor === false) box.appendChild(chip("not an ancestor of HEAD", "missing"));
-  const d = chip(s.dirty_count ? s.dirty_count + " dirty" : "clean", s.dirty_count ? "warn" : "ok");
-  if (s.dirty && s.dirty.length) d.title = s.dirty.join("\n");
-  if (!warnOnly) box.appendChild(d);
-  return box;
-}
-
-// Staleness runs git, so results are cached for a minute.
-const staleCache = new Map();  // key -> {at, promise}
-function stale(t) {
-  const k = keyOf(t) + "|" + t.created, hit = staleCache.get(k);
-  if (hit && Date.now() - hit.at < 60000) return hit.promise;
-  const promise = api("stale", ref(t));
-  promise.catch(() => staleCache.delete(k));
-  staleCache.set(k, { at: Date.now(), promise });
-  return promise;
-}
-
 function diffView(text) {
   const pre = el("pre", "diff");
   if (!text) { pre.textContent = "No differences."; return pre; }
@@ -955,11 +877,9 @@ function diffView(text) {
   return pre;
 }
 
-// Details: git context and staleness, then tabs Latest / History and Done/Restore.
+// Details: git context, then tabs Latest / History and Done/Restore.
 function details(t, box, action) {
-  const gitBox = el("div", "gitline");
   const crumbs = gitCrumbs(t);
-  if (crumbs) gitBox.appendChild(crumbs);
   const tabs = el("div", "seg tabs");
   const view = el("div");
   const latest = el("button", "", "Latest");
@@ -968,7 +888,8 @@ function details(t, box, action) {
   const bar = el("div", "dbar");
   bar.appendChild(tabs);
   if (action) bar.appendChild(action);
-  box.appendChild(gitBox); box.appendChild(bar); box.appendChild(view);
+  if (crumbs) box.appendChild(crumbs);
+  box.appendChild(bar); box.appendChild(view);
   const fail = (e) => { view.textContent = "Cannot load (" + e.message + ")."; };
   const select = (b) => [latest, hist].forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
 
@@ -1039,11 +960,10 @@ function details(t, box, action) {
   hist.addEventListener("click", () => { select(hist); view.textContent = "Loading…"; showHistory().catch(fail); });
   select(latest);
   view.textContent = "Loading…";
-  stale(t).then((s) => gitBox.appendChild(staleLine(s, false))).catch(() => {});
   return showFile("");
 }
 
-function chips(t, stale) {
+function chips(t) {
   const box = el("div", "chips");
   if (t.status === "archived") box.appendChild(chip("archived", "archived"));
   if (!t.project_exists) box.appendChild(chip("path missing", "missing", t.project));
@@ -1081,12 +1001,7 @@ function card(t) {
   if (t.title !== t.task) head.appendChild(rich("div", "title", t.title));
   const snippet = hits.get(keyOf(t));
   if (snippet) head.appendChild(el("div", "snippet", snippet));
-  const ch = chips(t);
-  head.appendChild(ch);
-  // Only problems here (new commits, missing dirs…); the full report is in Details.
-  if (t.status === "active" && t.project_exists) {
-    stale(t).then((s) => { staleLine(s, true).childNodes.forEach((n) => ch.appendChild(n.cloneNode(true))); }).catch(() => {});
-  }
+  head.appendChild(chips(t));
   c.appendChild(head);
   const box = el("div", "details");
   box.hidden = true;

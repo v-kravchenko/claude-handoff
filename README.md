@@ -119,15 +119,14 @@ Tasks are grouped by project (the directory the handoffs belong to); each
 project section shows its active tasks and folds its archived ones under
 *Archived (N)*. Sections collapse with a tap. Each card shows the task,
 its title and age, and chips only when something needs attention
-(archived, idle for 14+ days, new commits since the handoff, a missing
-work directory). Only one card is expanded at a time. Its buttons:
+(archived, idle for 14+ days, a missing project directory). Only one card
+is expanded at a time. Its buttons:
 
 - **Copy resume** copies the resume command, `cd ~/'project' && claude "/pickup @task"`.
-- **Details** (or a tap on the card) shows the branch and commit, what
-  changed in the work repository since the handoff (new commits,
-  uncommitted files, a missing commit) and renders the whole latest
-  handoff. The *History* tab lists every saved version, opens any of them
-  and shows the diff against the previous one.
+- **Details** (or a tap on the card) shows the branch and commit at
+  handoff time and renders the whole latest handoff. The *History* tab
+  lists every saved version, opens any of them and shows the diff against
+  the previous one. The staleness report is left to `/pickup`.
 - **Done** (in *Details*) archives an active task and **Restore** brings an
   archived one back, like `/handoff @task done` and the *Restore* option of
   `/pickup`.

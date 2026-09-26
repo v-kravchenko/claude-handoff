@@ -396,13 +396,9 @@ s, b = get("/api/handoff?" + A + "&file=2026-09-25_101500.md", h); print("versio
 s, b = get("/api/handoff?" + A + "&file=../../x.md", h); print("badfile", s)
 s, b = get("/api/diff?" + A + "&old=2026-09-25_101500.md&new=2026-09-26_173557.md", h); print("diff", s, "+## Next steps" in json.loads(b)["diff"])
 s, b = get("/api/diff?" + A + "&old=nope.md&new=2026-09-26_173557.md", h); print("baddiff", s)
-s, b = get("/api/stale?" + A, h); d = json.loads(b); print("stale", s, d["exists"], d["git"])
-s, b = get("/api/stale?slug=home~app&status=archived&task=old", h); print("stalemissing", s, json.loads(b)["exists"])
-s, b = get("/api/stale?slug=gitproj&status=active&task=repo", h); d = json.loads(b); print("gitstale", d["git"], d.get("commits"))
-s, b = get("/api/stale?slug=gitproj&status=active&task=nest", h); d = json.loads(b); print("neststale", d["git"], d.get("commits"))
-s, b = get("/api/stale?slug=gitproj&status=active&task=wt", h); d = json.loads(b); print("wtstale", d["git"], d.get("commits"))
 s, b = get("/api/search?q=SECOND+paragraph", h); print("search", s, [x["task"] for x in json.loads(b)])
 s, b = get("/api/search?q=x", h); print("shortsearch", s, json.loads(b))
+s, b = get("/api/stale?" + A, h); print("nostale", s)
 token = re.search(r'const TOKEN = "([^"]*)"', get("/", h)[1]).group(1)
 print("token", len(token) > 10)
 def post(path, body, hdrs):
@@ -437,13 +433,9 @@ EOF
   has "badfile 404" "a file outside the version list is rejected"
   has "diff 200 True" "diff between versions"
   has "baddiff 404" "diff of an unknown version is rejected"
-  has "stale 200 True False" "staleness of a non-git work dir"
-  has "stalemissing 200 False" "staleness reports a missing work dir"
-  has "gitstale True 1" "staleness counts commits in the project repo"
-  has "neststale True None" "a nested repo's commit is not compared"
-  has "wtstale True 1" "staleness works in a worktree"
   has "search 200 ['alpha']" "full-text search finds text beyond the summary"
   has "shortsearch 200 []" "one-letter search returns nothing"
+  has "nostale 404" "the dashboard has no staleness API"
   has "token True" "the page carries a write token"
   has "notoken 403" "POST without the token is rejected"
   has "badorigin 403" "POST from a foreign Origin is rejected"
