@@ -1,0 +1,13 @@
+{
+  "name": "handoff",
+  "version": "1.0.0",
+  "description": "Save a Claude Code session as a handoff and resume it later with /pickup. Several named tasks per project directory, git-aware staleness checks.",
+  "author": {
+    "name": "v-kravchenko",
+    "url": "https://github.com/v-kravchenko"
+  },
+  "homepage": "https://github.com/v-kravchenko/claude-handoff",
+  "repository": "https://github.com/v-kravchenko/claude-handoff",
+  "license": "MIT",
+  "keywords": ["handoff", "resume", "session", "context", "skills"]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "claude-handoff",
+  "description": "Session handoff and resume skills for Claude Code.",
+  "owner": {
+    "name": "v-kravchenko",
+    "url": "https://github.com/v-kravchenko"
+  },
+  "plugins": [
+    {
+      "name": "handoff",
+      "source": "./",
+      "description": "Save a Claude Code session as a handoff and resume it later with /pickup."
+    }
+  ]
+}
