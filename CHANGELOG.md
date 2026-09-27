@@ -19,7 +19,8 @@ All notable changes to this project are documented here. The format follows
   block to `~/.claude/CLAUDE.md` and the hook to `~/.claude/settings.json`;
   `--uninstall` removes both. It never touches a `tips` skill that is not
   ours and remembers the choices in `skills/handoff/install.conf` for
-  installs without a terminal.
+  installs without a terminal. The `tips` skill lives in `extras/`, so the
+  plugin keeps only `handoff` and `pickup`.
 - `handoffs`: tips fold under *Tips (N)* in their project's section (global
   ones under *Global tips (N)*), are searched with the tasks and can be
   deleted.

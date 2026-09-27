@@ -15,6 +15,8 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd -P)"
 SRC="$REPO/skills"
+# Not under skills/: the plugin (which loads skills/) ships only handoff and pickup.
+EXTRAS="$REPO/extras"
 CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 DEST="$CFG/skills"
 MD="$CFG/CLAUDE.md"
@@ -41,10 +43,11 @@ ask() {
   case $a in [yY]*) echo y ;; [nN]*) echo n ;; *) echo "$2" ;; esac
 }
 
+# install_skill NAME [SOURCE_DIR]
 install_skill() {
   if [[ -d $DEST/$1 ]]; then echo "updating $DEST/$1"; else echo "installing $DEST/$1"; fi
   rm -rf "${DEST:?}/$1"
-  cp -R "$SRC/$1" "$DEST/$1"
+  cp -R "${2:-$SRC}/$1" "$DEST/$1"
 }
 
 remove_skill() {
@@ -201,7 +204,7 @@ install_tips() {
     echo "warning: $DEST/tips exists and is not ours; tips skipped" >&2
     return
   fi
-  install_skill tips
+  install_skill tips "$EXTRAS"
   add_block
   hook add
 }

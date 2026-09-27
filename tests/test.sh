@@ -196,8 +196,8 @@ has "task: spaced" "/pickup works with a space in the project path"
 inject pickup "@spaced some notes"
 has "task: spaced" "/pickup ignores words after the task"
 
-for s in handoff pickup tips; do
-  f="$SKILLS/$s/SKILL.md"
+for f in "$SKILLS"/handoff/SKILL.md "$SKILLS"/pickup/SKILL.md "$SKILLS"/../extras/tips/SKILL.md; do
+  s=$(basename "$(dirname "$f")")
   assert "$s: frontmatter starts the file" [ "$(head -n 1 "$f")" = "---" ]
   assert "$s: frontmatter is closed" [ "$(sed -n '2,$p' "$f" | grep -c '^---$')" -ge 1 ]
   assert "$s: name matches the directory" grep -qx "name: $s" "$f"
@@ -285,7 +285,8 @@ tip() {
 run "$TP" tips
 has "usage: handoff.sh PROJECT_DIR tips" "tips without a subcommand prints usage"
 run "$TP" tips status
-has "tips: on" "tips are on in the repo (skills/tips next to skills/handoff)"
+has "tips: off" "tips are off in the repo layout (the plugin loads skills/ only)"
+assert "the plugin ships only handoff and pickup" [ "$(ls "$SKILLS")" = "$(printf 'handoff\npickup')" ]
 TOFF="$TMP/notips"; mkdir -p "$TOFF"; cp -R "$SKILLS/handoff" "$TOFF/"
 OUT=$("$TOFF/handoff/handoff.sh" "$TP" tips status)
 has "tips: off" "tips are off without the tips skill next to handoff"
@@ -376,7 +377,7 @@ assert "events are logged" grep -q '"event":"refuted","project":"'"$KEYDIR"'","i
 HOOKIN='{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"mktemp -p /tmp","description":"x \"q\""},"error":"Exit code 1\nmktemp: failed to create file via template /tmp/tmp.X: No such file or directory","is_interrupt":false}'
 OUT=$("$TOFF/handoff/handoff.sh" "$TP" tips hook <<<"$HOOKIN")
 assert "hook is silent when tips are off" [ -z "$OUT" ]
-TS="$TMP/tipskills"; mkdir -p "$TS"; cp -R "$SKILLS/handoff" "$SKILLS/tips" "$TS/"
+TS="$TMP/tipskills"; mkdir -p "$TS"; cp -R "$SKILLS/handoff" "$SKILLS/../extras/tips" "$TS/"
 OUT=$("$TS/handoff/handoff.sh" "$TP" tips status)
 has "tips: on" "tips are on with the tips skill installed"
 OUT=$("$TS/handoff/handoff.sh" "$TP" tips hook <<<"$HOOKIN")

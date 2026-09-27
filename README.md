@@ -51,10 +51,10 @@ In Claude Code:
 /plugin install handoff@claude-handoff
 ```
 
-Plugin skills are namespaced, so the commands are **`/handoff:handoff`**,
-**`/handoff:pickup`** and **`/handoff:tips`**. Update with `/plugin marketplace update claude-handoff`.
-The plugin does not add the tips block to `CLAUDE.md` or the tips hook; use
-the personal-skills install for those.
+Plugin skills are namespaced, so the commands are **`/handoff:handoff`** and
+**`/handoff:pickup`**. Update with `/plugin marketplace update claude-handoff`.
+The plugin has no [tips](#tips): they need the `/tips` skill, a block in
+`CLAUDE.md` and a hook, so they come only with the personal-skills install.
 
 ### As personal skills
 
@@ -134,7 +134,7 @@ only when you type them. `/tips` can also be invoked by the agent.
 
 ## Tips
 
-Tips are short hints that `/handoff` saves for future sessions: a dead end,
+Tips come with `./install.sh --tips` (not with the plugin). Tips are short hints that `/handoff` saves for future sessions: a dead end,
 a surprise, the fix for an error, a correction you made. They are
 **unverified**: each has a `Verify` step, and the agent is told to run it
 before relying on a tip and to mark the tip `verified` or `refuted`.
