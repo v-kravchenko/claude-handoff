@@ -392,65 +392,22 @@ def collect_tips(root):
     return tips
 
 
-def set_field(path, key, value):
-    """Replace `key:` in the frontmatter or add it at its end, like set_field in
-    tips.sh; other lines stay byte for byte. Returns an error message or None."""
-    value = " ".join(value.split())
-    try:
-        with open(path, "rb") as fh:
-            lines = fh.read().splitlines(keepends=True)
-        if not lines or lines[0].strip() != b"---":
-            return "no frontmatter"
-        eol = lines[0][len(lines[0].rstrip(b"\r\n")):] or b"\n"
-        line = key.encode() + b": " + value.encode() + eol
-        for i in range(1, len(lines)):
-            if lines[i].strip() == b"---":
-                lines.insert(i, line)
-                break
-            if lines[i].startswith(key.encode() + b":"):
-                lines[i] = line
-                break
-        else:
-            return "unterminated frontmatter"
-        tmp = os.path.join(os.path.dirname(path), "." + os.path.basename(path) + ".tmp")
-        with open(tmp, "wb") as fh:
-            fh.write(b"".join(lines))
-        os.replace(tmp, path)
-    except OSError as e:
-        return str(e)
-    return None
-
-
-def tip_action(root, slug, tid, action, reason=""):
-    """verified | refuted | delete one tip, logged like tips.sh does.
-    Returns an error message or None."""
+def delete_tip(root, slug, tid):
+    """Delete one tip file, logged like tips.sh does. Returns an error message or None."""
     if slug not in subdirs(os.path.join(root, TIPS)) or tid not in tip_files(root, slug):
         return "no such tip"
-    path = os.path.join(root, TIPS, slug, tid + ".md")
-    today = datetime.date.today().isoformat()
-    if action == "verified":
-        err = set_field(path, "status", "active") or set_field(path, "last_verified", today)
-    elif action == "refuted":
-        err = set_field(path, "status", "refuted") or \
-            set_field(path, "refuted", today + " " + (reason.strip() or "no reason given"))
-    elif action == "delete":
-        try:
-            os.remove(path)
-            err = None
-        except OSError as e:
-            err = str(e)
-    else:
-        return "unknown action"
-    if not err:
-        event = {"ts": datetime.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"),
-                 "event": "deleted" if action == "delete" else action, "project": slug,
-                 "id": tid, "query": "", "hits": 0, "via": "dashboard"}
-        try:
-            with open(os.path.join(root, TIPS, "log.jsonl"), "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(event, ensure_ascii=False) + "\n")
-        except OSError:
-            pass
-    return err
+    try:
+        os.remove(os.path.join(root, TIPS, slug, tid + ".md"))
+    except OSError as e:
+        return str(e)
+    event = {"ts": datetime.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"),
+             "event": "deleted", "project": slug, "id": tid, "query": "", "hits": 0, "via": "dashboard"}
+    try:
+        with open(os.path.join(root, TIPS, "log.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    return None
 
 
 # --- server -------------------------------------------------------------------
@@ -530,22 +487,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 or (origin and origin != "http://" + host):
             return self.send_json({"error": "forbidden"}, 403)
         path = self.path.split("?", 1)[0]
-        if path not in ("/api/done", "/api/restore", "/api/rename", "/api/tip"):
+        if path not in ("/api/done", "/api/restore", "/api/rename", "/api/tip/delete"):
             return self.not_found()
         try:
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
             slug = str(body["slug"])
-            if path == "/api/tip":
-                tid, action, reason = str(body["id"]), str(body["action"]), str(body.get("reason") or "")
+            if path == "/api/tip/delete":
+                tid = str(body["id"])
             else:
                 task = str(body["task"])
             if path == "/api/rename":
                 status, new = str(body["status"]), str(body["new"])
-        except (ValueError, KeyError, TypeError, AttributeError):
+        except (ValueError, KeyError, TypeError):
             return self.send_json({"error": "bad request"}, 400)
-        if path == "/api/tip":
-            err = tip_action(handoff_root(), slug, tid, action, reason[:500])
+        if path == "/api/tip/delete":
+            err = delete_tip(handoff_root(), slug, tid)
         elif path == "/api/rename":
             err = rename_task(handoff_root(), slug, status, task, new)
         else:
@@ -617,7 +574,7 @@ def main(argv=None):
                          "(default: $HANDOFF_PORT or 8765)" % (PORT_TRIES - 1))
     ap.add_argument("--host", default="127.0.0.1", help="address to listen on (default: 127.0.0.1)")
     ap.add_argument("--no-open", action="store_true", help="do not open a browser")
-    ap.add_argument("--read-only", action="store_true", help="disable Done/Restore/Rename and tip buttons")
+    ap.add_argument("--read-only", action="store_true", help="disable Done/Restore/Rename and Delete buttons")
     ap.add_argument("--json", action="store_true", help="print the task data as JSON and exit")
     ap.add_argument("--version", action="version", version="handoffs " + VERSION)
     args = ap.parse_args(argv)
@@ -984,7 +941,6 @@ const ICONS = {
   branch: ["M6 3v12", "M18 6a3 3 0 1 0 0 .01", "M6 18a3 3 0 1 0 0 .01", "M18 9c0 6-12 3-12 9"],
   commit: ["M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6", "M3 12h6", "M15 12h6"],
   edit: ["M4 20h4L19 9l-4-4L4 16z", "M13 7l4 4"],
-  x: ["M6 6l12 12", "M18 6L6 18"],
   trash: ["M4 7h16", "M9 7V4h6v3", "M6 7l1 13h10l1-13"],
 };
 function icon(name) {
@@ -1237,7 +1193,7 @@ function card(t) {
   return c;
 }
 
-// Tips saved by /handoff (skills/handoff/tips.sh): read, verify, refute, delete.
+// Tips saved by /handoff (skills/handoff/tips.sh): read and delete; /tips does the rest.
 function tipCard(tip) {
   const c = el("div", "card" + (tip.status === "active" ? "" : " dim"));
   const head = el("div", "head");
@@ -1268,24 +1224,15 @@ function tipCard(tip) {
   box.appendChild(el("div", "file", tilde(tip.file)));
   if (data.writable) {
     const row = el("div", "actions");
-    const act = (name, label, title, run) => {
-      const b = ibtn(name, label);
-      b.title = title;
-      b.addEventListener("click", async () => {
-        const body = run();
-        if (!body) return;
-        b.disabled = true;
-        try { await post("tip", Object.assign({ slug: tip.slug, id: tip.id }, body)); await load(); }
-        catch (e) { b.disabled = false; alert("Failed: " + e.message); }
-      });
-      row.appendChild(b);
-    };
-    act("check", "Verified", "the tip still holds (sets last_verified)", () => ({ action: "verified" }));
-    if (tip.status !== "refuted") act("x", "Refute", "the tip is wrong; search stops returning it", () => {
-      const why = prompt("Why is " + tip.id + " wrong?");
-      return why === null ? null : { action: "refuted", reason: why };
+    const del = ibtn("trash", "Delete");
+    del.title = "delete the tip file";
+    del.addEventListener("click", async () => {
+      if (!confirm("Delete tip " + tip.id + "?")) return;
+      del.disabled = true;
+      try { await post("tip/delete", { slug: tip.slug, id: tip.id }); await load(); }
+      catch (e) { del.disabled = false; alert("Failed: " + e.message); }
     });
-    act("trash", "Delete", "delete the tip file", () => confirm("Delete tip " + tip.id + "?") ? { action: "delete" } : null);
+    row.appendChild(del);
     box.appendChild(row);
   }
   head.addEventListener("click", () => {

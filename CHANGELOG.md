@@ -22,7 +22,7 @@ All notable changes to this project are documented here. The format follows
   installs without a terminal.
 - `handoffs`: tips fold under *Tips (N)* in their project's section (global
   ones under *Global tips (N)*), are searched with the tasks and can be
-  marked *Verified*, *Refuted* or deleted.
+  deleted.
 
 ### Changed
 

@@ -602,15 +602,12 @@ open(crlf, "wb").write(b"---\r\ntask: old\r\ntitle: \xff raw\r\n---\r\nbody")
 os.utime(crlf, (1000000000, 1000000000))
 print("rename-arch", ren("old", "older", "archived"))
 crlf = crlf.replace("/old/", "/older/")
-tip = lambda slug, i, action, **kw: post("/api/tip", dict({"slug": slug, "id": i, "action": action}, **kw), tk)
-print("tip-notoken", post("/api/tip", {"slug": "home~app", "id": "tip", "action": "verified"}, {}))
-print("tip-bad", tip("home~app", "nope", "verified"), tip("..", "tip", "verified"), tip("home~app", "../tip", "verified"),
-      tip("home~app", "tip", "rm"), tip("home~app", "Bad Name", "delete"))
-print("tip-nofield", post("/api/tip", {"slug": "home~app", "id": "tip"}, tk))
-print("tip-verified", tip("home~app", "tip", "verified"), tip("home~app", "tip", "verified"))
-print("tip-refuted", tip("_global", "g1", "refuted", reason="wrong\nsince 2.0"))
-print("tip-nofm", tip("home~gone", "raw", "verified"))
-print("tip-delete", tip("home~gone", "raw", "delete"), tip("home~gone", "raw", "delete"))
+deltip = lambda slug, i: post("/api/tip/delete", {"slug": slug, "id": i}, tk)
+print("tip-notoken", post("/api/tip/delete", {"slug": "home~app", "id": "tip"}, {}))
+print("tip-bad", deltip("home~app", "nope"), deltip("..", "tip"), deltip("home~app", "../tip"),
+      deltip("home~app", "Bad Name"), deltip("_tips", "log"))
+print("tip-nofield", post("/api/tip/delete", {"slug": "home~app"}, tk))
+print("tip-delete", deltip("home~gone", "raw"), deltip("home~gone", "raw"), deltip("_global", "g1"))
 print("rename-bytes", open(crlf, "rb").read() == b"---\r\ntask: older\r\ntitle: \xff raw\r\n---\r\nbody",
       int(os.stat(crlf).st_mtime) == 1000000000, [f for f in os.listdir(os.path.dirname(crlf)) if f.startswith(".")])
 EOF
@@ -651,21 +648,14 @@ EOF
   has "rename 200" "rename renames an active task"
   has "rename-arch 200" "rename renames an archived task"
   has "rename-bytes True True []" "rename keeps line endings, raw bytes and mtime, leaves no temp file"
-  has "tip-notoken 403" "tip action without the token is rejected"
-  has "tip-bad 409 409 409 409 409" "tip action on an unknown tip, slug, id or action is rejected"
-  has "tip-nofield 400" "tip action without an action is a bad request"
-  has "tip-verified 200 200" "tip verified"
-  has "tip-refuted 200" "tip refuted"
-  has "tip-nofm 409" "tip without frontmatter cannot be marked"
-  has "tip-delete 200 409" "tip delete, then it is gone"
-  TODAY=$(date +%Y-%m-%d)
-  assert "verified adds fields before the frontmatter end, once" \
-    [ "$(cat "$D/_tips/home~app/tip.md")" = "$(printf -- '---\ntitle: a tip\nstatus: active\nlast_verified: %s\n---' "$TODAY")" ]
-  assert "refuted replaces status, folds the reason, keeps CRLF" \
-    [ "$(cat "$D/_tips/_global/g1.md")" = "$(printf -- '---\r\ntitle: global one\r\nkeywords: a, "b, c"\r\nenv: termux\r\nstatus: refuted\r\nrefuted: %s wrong since 2.0\r\n---\r\nTip: body\r' "$TODAY")" ]
+  has "tip-notoken 403" "tip delete without the token is rejected"
+  has "tip-bad 409 409 409 409 409" "tip delete of an unknown tip, slug or id is rejected"
+  has "tip-nofield 400" "tip delete without an id is a bad request"
+  has "tip-delete 200 409 200" "tip delete, then it is gone; global tips too"
   assert "delete removes the tip file" [ ! -e "$D/_tips/home~gone/raw.md" ]
-  assert "tip edits leave no temp files" [ -z "$(find "$D/_tips" -name '.*.tmp')" ]
-  assert "tip actions are logged" [ "$(grep -c '"via": "dashboard"' "$D/_tips/log.jsonl")" -eq 4 ]
+  assert "delete removes a global tip file" [ ! -e "$D/_tips/_global/g1.md" ]
+  assert "delete keeps other tips" [ -f "$D/_tips/home~app/tip.md" ]
+  assert "tip deletes are logged" [ "$(grep -c '"via": "dashboard"' "$D/_tips/log.jsonl")" -eq 2 ]
   assert "delete is logged" grep -q '"event": "deleted", "project": "home~gone", "id": "raw"' "$D/_tips/log.jsonl"
   assert "rename moves the task directory" [ -d "$D/home~app/beta" ]
   assert "rename leaves no old directory" [ ! -e "$D/home~app/alpha" ]

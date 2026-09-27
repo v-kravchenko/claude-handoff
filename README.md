@@ -206,9 +206,8 @@ is expanded at a time. Its buttons:
 Tips (see [Tips](#tips)) fold under *Tips (N)* in their project's section;
 global tips under *Global tips (N)* at the bottom. Refuted and superseded
 tips are dimmed. A tap on a tip shows its `when`, keywords and text, and
-the buttons **Verified** (still holds; sets `last_verified`), **Refute**
-(asks why; search stops returning it) and **Delete** (removes the file).
-Moving, superseding and editing tips is left to `/tips`.
+**Delete** removes a useless or outdated tip. Verifying, refuting, moving
+and editing tips is left to the agent via `/tips`.
 
 The search box filters by task, title and goal at once, and also searches
 the full text of the latest handoffs and of tips. The page reads the handoff files on
@@ -220,7 +219,7 @@ date.
 | `--port N` | Port to listen on (default `$HANDOFF_PORT` or `8765`); if it is busy, the next nine are tried. `0` picks any free port. |
 | `--host ADDR` | Address to listen on (default `127.0.0.1`). |
 | `--no-open` | Only print the URL. |
-| `--read-only` | Hide the *Done*, *Restore*, *Rename* and tip buttons and refuse changes. |
+| `--read-only` | Hide the *Done*, *Restore*, *Rename* and *Delete* buttons and refuse changes. |
 | `--json` | Print the task data as JSON and exit. |
 
 The browser opens with `open` (macOS), `xdg-open` (Linux desktop),
@@ -306,7 +305,7 @@ Set them in your shell profile or in the `env` block of
 - The dashboard listens on `127.0.0.1` only and reads nothing but handoff
   files of listed tasks and tip files. It rejects requests whose `Host` header is not
   local, which blocks DNS-rebinding attacks from web pages. Its only changes
-  are *Done*, *Restore*, *Rename* and the tip buttons: they need a random token that is embedded in the
+  are *Done*, *Restore*, *Rename* and deleting a tip: they need a random token that is embedded in the
   page at startup and sent in a custom header, so other web pages cannot
   trigger them. `--read-only` turns them off. Other programs on the same
   machine (on Android, other apps) are not web pages: while the dashboard
