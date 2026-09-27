@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-27
+
 ### Added
 
 - A `UserPromptSubmit` tips hook: when the request contains a tip's keyword
@@ -149,6 +151,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.2.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/v-kravchenko/claude-handoff/compare/v1.1.3...v1.2.0
 [1.1.3]: https://github.com/v-kravchenko/claude-handoff/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.1.1...v1.1.2
