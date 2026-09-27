@@ -476,6 +476,12 @@ EOF
   printf 'no frontmatter here\n' >"$D/other/bare/2026-09-02_090000.md"
   printf -- '---\ntitle: hidden\n---\n' >"$D/.hidden/x/2026-09-03_090000.md"
   mkdir -p "$D/_tips/home~app" && printf -- '---\ntitle: a tip\n---\n' >"$D/_tips/home~app/tip.md"
+  mkdir -p "$D/_tips/_global" "$D/_tips/home~gone"
+  printf -- '---\r\ntitle: global one\r\nkeywords: a, "b, c"\r\nenv: termux\r\nstatus: refuted\r\n---\r\nTip: body\r\n' \
+    >"$D/_tips/_global/g1.md"
+  printf 'no frontmatter\n' >"$D/_tips/home~gone/raw.md"
+  printf -- '---\ntitle: x\n---\n' | tee "$D/_tips/home~app/Bad Name.md" >"$D/_tips/home~app/.hidden.md"
+  printf '{"event":"search"}\n' >"$D/_tips/log.jsonl"
 
   OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --json 2>&1) || fail "handoffs --json failed"
   # jcheck EXPR MSG: EXPR is Python over d (the JSON) and t (task by name).
@@ -496,6 +502,12 @@ EOF
   jcheck 'len(t["old"]["goal"]) <= 201 and t["old"]["goal"].endswith("…")' "long goal is truncated"
   jcheck 't["bare"]["title"] == "bare" and t["bare"]["project"] == "other" and t["bare"]["created"].startswith("2026-09-02T09:00")' "no frontmatter: task name, slug, date from file name"
   jcheck '[x["task"] for x in d["tasks"]] == ["alpha", "bare", "old"]' "newest first"
+  # tips: TT maps "slug/id" to the tip.
+  TT='{x["slug"] + "/" + x["id"]: x for x in d["tips"]}'
+  jcheck 'sorted('"$TT"') == ["_global/g1", "home~app/tip", "home~gone/raw"]' "tips: bad names, dot files and log.jsonl are skipped"
+  jcheck '(lambda t: t["title"] == "a tip" and t["status"] == "active" and t["level"] == "project" and t["body"] == "")('"$TT"'["home~app/tip"])' "tip without status is active"
+  jcheck '(lambda t: t["level"] == "global" and t["status"] == "refuted" and t["env"] == "termux" and t["keywords"] == "a, \"b, c\"" and t["body"] == "Tip: body")('"$TT"'["_global/g1"])' "global tip with CRLF and fields"
+  jcheck '(lambda t: t["title"] == "raw" and t["body"] == "no frontmatter")('"$TT"'["home~gone/raw"])' "tip without frontmatter: id as title"
 
   OUT=$(HANDOFF_ROOT="$TMP/none" python3 "$DASH" --json 2>&1)
   jcheck 'd["tasks"] == []' "missing root gives no tasks"
@@ -590,6 +602,15 @@ open(crlf, "wb").write(b"---\r\ntask: old\r\ntitle: \xff raw\r\n---\r\nbody")
 os.utime(crlf, (1000000000, 1000000000))
 print("rename-arch", ren("old", "older", "archived"))
 crlf = crlf.replace("/old/", "/older/")
+tip = lambda slug, i, action, **kw: post("/api/tip", dict({"slug": slug, "id": i, "action": action}, **kw), tk)
+print("tip-notoken", post("/api/tip", {"slug": "home~app", "id": "tip", "action": "verified"}, {}))
+print("tip-bad", tip("home~app", "nope", "verified"), tip("..", "tip", "verified"), tip("home~app", "../tip", "verified"),
+      tip("home~app", "tip", "rm"), tip("home~app", "Bad Name", "delete"))
+print("tip-nofield", post("/api/tip", {"slug": "home~app", "id": "tip"}, tk))
+print("tip-verified", tip("home~app", "tip", "verified"), tip("home~app", "tip", "verified"))
+print("tip-refuted", tip("_global", "g1", "refuted", reason="wrong\nsince 2.0"))
+print("tip-nofm", tip("home~gone", "raw", "verified"))
+print("tip-delete", tip("home~gone", "raw", "delete"), tip("home~gone", "raw", "delete"))
 print("rename-bytes", open(crlf, "rb").read() == b"---\r\ntask: older\r\ntitle: \xff raw\r\n---\r\nbody",
       int(os.stat(crlf).st_mtime) == 1000000000, [f for f in os.listdir(os.path.dirname(crlf)) if f.startswith(".")])
 EOF
@@ -630,6 +651,22 @@ EOF
   has "rename 200" "rename renames an active task"
   has "rename-arch 200" "rename renames an archived task"
   has "rename-bytes True True []" "rename keeps line endings, raw bytes and mtime, leaves no temp file"
+  has "tip-notoken 403" "tip action without the token is rejected"
+  has "tip-bad 409 409 409 409 409" "tip action on an unknown tip, slug, id or action is rejected"
+  has "tip-nofield 400" "tip action without an action is a bad request"
+  has "tip-verified 200 200" "tip verified"
+  has "tip-refuted 200" "tip refuted"
+  has "tip-nofm 409" "tip without frontmatter cannot be marked"
+  has "tip-delete 200 409" "tip delete, then it is gone"
+  TODAY=$(date +%Y-%m-%d)
+  assert "verified adds fields before the frontmatter end, once" \
+    [ "$(cat "$D/_tips/home~app/tip.md")" = "$(printf -- '---\ntitle: a tip\nstatus: active\nlast_verified: %s\n---' "$TODAY")" ]
+  assert "refuted replaces status, folds the reason, keeps CRLF" \
+    [ "$(cat "$D/_tips/_global/g1.md")" = "$(printf -- '---\r\ntitle: global one\r\nkeywords: a, "b, c"\r\nenv: termux\r\nstatus: refuted\r\nrefuted: %s wrong since 2.0\r\n---\r\nTip: body\r' "$TODAY")" ]
+  assert "delete removes the tip file" [ ! -e "$D/_tips/home~gone/raw.md" ]
+  assert "tip edits leave no temp files" [ -z "$(find "$D/_tips" -name '.*.tmp')" ]
+  assert "tip actions are logged" [ "$(grep -c '"via": "dashboard"' "$D/_tips/log.jsonl")" -eq 4 ]
+  assert "delete is logged" grep -q '"event": "deleted", "project": "home~gone", "id": "raw"' "$D/_tips/log.jsonl"
   assert "rename moves the task directory" [ -d "$D/home~app/beta" ]
   assert "rename leaves no old directory" [ ! -e "$D/home~app/alpha" ]
   assert "rename keeps the archived task archived" [ -d "$D/home~app/_archive/older" ]

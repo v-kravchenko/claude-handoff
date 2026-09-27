@@ -352,7 +352,105 @@ def collect(root):
             t["project"] = t["project"] or slug
             out.append(t)
     out.sort(key=lambda t: t["saved"], reverse=True)
-    return {"root": root, "home": os.path.expanduser("~"), "version": VERSION, "tasks": out}
+    return {"root": root, "home": os.path.expanduser("~"), "version": VERSION, "tasks": out,
+            "tips": collect_tips(root)}
+
+
+# --- tips (files written by skills/handoff/tips.sh) ---------------------------
+
+GLOBAL = "_global"
+TIP_FIELDS = ("title", "when", "keywords", "env", "origin", "status", "last_verified",
+              "refuted", "superseded_by")
+
+
+def tip_files(root, slug):
+    """Tip ids of one tips directory (a project slug or `_global`)."""
+    d = os.path.join(root, TIPS, slug)
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return []
+    return [n[:-3] for n in names if n.endswith(".md") and TASK_RE.fullmatch(n[:-3])
+            and os.path.isfile(os.path.join(d, n))]
+
+
+def collect_tips(root):
+    tips = []
+    for slug in subdirs(os.path.join(root, TIPS)):
+        for tid in tip_files(root, slug):
+            path = os.path.join(root, TIPS, slug, tid + ".md")
+            lines = read_lines(os.path.dirname(path), tid + ".md")
+            if lines is None:
+                continue
+            fields, start = parse_frontmatter(lines)
+            tip = {k: fields.get(k, "") for k in TIP_FIELDS}
+            tip.update({"slug": slug, "id": tid, "level": "global" if slug == GLOBAL else "project",
+                        "title": tip["title"] or tid, "status": tip["status"] or "active",
+                        "body": "\n".join(lines[start:]).strip("\n"), "file": path,
+                        "modified": datetime.datetime.fromtimestamp(os.path.getmtime(path)).astimezone().isoformat()})
+            tips.append(tip)
+    return tips
+
+
+def set_field(path, key, value):
+    """Replace `key:` in the frontmatter or add it at its end, like set_field in
+    tips.sh; other lines stay byte for byte. Returns an error message or None."""
+    value = " ".join(value.split())
+    try:
+        with open(path, "rb") as fh:
+            lines = fh.read().splitlines(keepends=True)
+        if not lines or lines[0].strip() != b"---":
+            return "no frontmatter"
+        eol = lines[0][len(lines[0].rstrip(b"\r\n")):] or b"\n"
+        line = key.encode() + b": " + value.encode() + eol
+        for i in range(1, len(lines)):
+            if lines[i].strip() == b"---":
+                lines.insert(i, line)
+                break
+            if lines[i].startswith(key.encode() + b":"):
+                lines[i] = line
+                break
+        else:
+            return "unterminated frontmatter"
+        tmp = os.path.join(os.path.dirname(path), "." + os.path.basename(path) + ".tmp")
+        with open(tmp, "wb") as fh:
+            fh.write(b"".join(lines))
+        os.replace(tmp, path)
+    except OSError as e:
+        return str(e)
+    return None
+
+
+def tip_action(root, slug, tid, action, reason=""):
+    """verified | refuted | delete one tip, logged like tips.sh does.
+    Returns an error message or None."""
+    if slug not in subdirs(os.path.join(root, TIPS)) or tid not in tip_files(root, slug):
+        return "no such tip"
+    path = os.path.join(root, TIPS, slug, tid + ".md")
+    today = datetime.date.today().isoformat()
+    if action == "verified":
+        err = set_field(path, "status", "active") or set_field(path, "last_verified", today)
+    elif action == "refuted":
+        err = set_field(path, "status", "refuted") or \
+            set_field(path, "refuted", today + " " + (reason.strip() or "no reason given"))
+    elif action == "delete":
+        try:
+            os.remove(path)
+            err = None
+        except OSError as e:
+            err = str(e)
+    else:
+        return "unknown action"
+    if not err:
+        event = {"ts": datetime.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"),
+                 "event": "deleted" if action == "delete" else action, "project": slug,
+                 "id": tid, "query": "", "hits": 0, "via": "dashboard"}
+        try:
+            with open(os.path.join(root, TIPS, "log.jsonl"), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+    return err
 
 
 # --- server -------------------------------------------------------------------
@@ -432,17 +530,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 or (origin and origin != "http://" + host):
             return self.send_json({"error": "forbidden"}, 403)
         path = self.path.split("?", 1)[0]
-        if path not in ("/api/done", "/api/restore", "/api/rename"):
+        if path not in ("/api/done", "/api/restore", "/api/rename", "/api/tip"):
             return self.not_found()
         try:
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(min(n, 4096)) or b"{}")
-            slug, task = str(body["slug"]), str(body["task"])
+            slug = str(body["slug"])
+            if path == "/api/tip":
+                tid, action, reason = str(body["id"]), str(body["action"]), str(body.get("reason") or "")
+            else:
+                task = str(body["task"])
             if path == "/api/rename":
                 status, new = str(body["status"]), str(body["new"])
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, AttributeError):
             return self.send_json({"error": "bad request"}, 400)
-        if path == "/api/rename":
+        if path == "/api/tip":
+            err = tip_action(handoff_root(), slug, tid, action, reason[:500])
+        elif path == "/api/rename":
             err = rename_task(handoff_root(), slug, status, task, new)
         else:
             err = move_task(handoff_root(), slug, task, archive=path == "/api/done")
@@ -513,7 +617,7 @@ def main(argv=None):
                          "(default: $HANDOFF_PORT or 8765)" % (PORT_TRIES - 1))
     ap.add_argument("--host", default="127.0.0.1", help="address to listen on (default: 127.0.0.1)")
     ap.add_argument("--no-open", action="store_true", help="do not open a browser")
-    ap.add_argument("--read-only", action="store_true", help="disable Done/Restore/Rename buttons")
+    ap.add_argument("--read-only", action="store_true", help="disable Done/Restore/Rename and tip buttons")
     ap.add_argument("--json", action="store_true", help="print the task data as JSON and exit")
     ap.add_argument("--version", action="version", version="handoffs " + VERSION)
     args = ap.parse_args(argv)
@@ -612,6 +716,8 @@ h2 .count { margin-left: auto; color: var(--muted); font-size: 14px; font-weight
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
   padding: 12px 14px; margin-bottom: 10px; }
 .card.open { border-color: var(--accent); }
+.card.dim { opacity: .6; }
+.tipmeta { color: var(--muted); font-size: 14px; margin: 2px 0; }
 .head { cursor: pointer; }
 .top { display: flex; align-items: baseline; gap: 8px; }
 .task { color: var(--muted); font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -703,7 +809,7 @@ const store = {
 };
 let collapsed = [];
 try { collapsed = JSON.parse(store.get("handoffs.collapsed", "[]")) || []; } catch (e) { /* ignore */ }
-const state = { q: "", collapsed, archOpen: [] };
+const state = { q: "", collapsed, archOpen: [], tipsOpen: [] };
 let closeOpen = null;  // closes the card whose details are open (one at a time)
 let data = null;
 let hits = new Map();  // full-text search: task key -> snippet
@@ -878,6 +984,8 @@ const ICONS = {
   branch: ["M6 3v12", "M18 6a3 3 0 1 0 0 .01", "M6 18a3 3 0 1 0 0 .01", "M18 9c0 6-12 3-12 9"],
   commit: ["M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6", "M3 12h6", "M15 12h6"],
   edit: ["M4 20h4L19 9l-4-4L4 16z", "M13 7l4 4"],
+  x: ["M6 6l12 12", "M18 6L6 18"],
+  trash: ["M4 7h16", "M9 7V4h6v3", "M6 7l1 13h10l1-13"],
 };
 function icon(name) {
   const NS = "http://www.w3.org/2000/svg";
@@ -1129,6 +1237,82 @@ function card(t) {
   return c;
 }
 
+// Tips saved by /handoff (skills/handoff/tips.sh): read, verify, refute, delete.
+function tipCard(tip) {
+  const c = el("div", "card" + (tip.status === "active" ? "" : " dim"));
+  const head = el("div", "head");
+  const top = el("div", "top");
+  top.appendChild(el("span", "task", tip.id));
+  const a = el("span", "age", age(tip.modified));
+  a.title = "modified " + tip.modified;
+  top.appendChild(a);
+  head.appendChild(top);
+  head.appendChild(rich("div", "title", tip.title));
+  const cs = el("div", "chips");
+  if (tip.status !== "active") cs.appendChild(chip(tip.status, "warn", tip.refuted || tip.superseded_by));
+  if (tip.env) cs.appendChild(chip("env: " + tip.env));
+  if (tip.origin === "web") cs.appendChild(chip("from web", "", "learned from web pages, issues or foreign code"));
+  if (tip.last_verified) cs.appendChild(chip("verified " + tip.last_verified));
+  head.appendChild(cs);
+  c.appendChild(head);
+
+  const box = el("div", "details");
+  box.hidden = true;
+  const meta = (label, v) => { if (v) box.appendChild(rich("div", "tipmeta", label + ": " + v)); };
+  meta("When", tip.when);
+  meta("Keywords", tip.keywords);
+  meta("Refuted", tip.refuted);
+  meta("Superseded by", tip.superseded_by);
+  // "Tip: / Why: / Verify:" lines are separate paragraphs, not one.
+  box.appendChild(markdown(tip.body.replace(/\n(?=[A-Z][a-z]+: )/g, "\n\n"), tip.title));
+  box.appendChild(el("div", "file", tilde(tip.file)));
+  if (data.writable) {
+    const row = el("div", "actions");
+    const act = (name, label, title, run) => {
+      const b = ibtn(name, label);
+      b.title = title;
+      b.addEventListener("click", async () => {
+        const body = run();
+        if (!body) return;
+        b.disabled = true;
+        try { await post("tip", Object.assign({ slug: tip.slug, id: tip.id }, body)); await load(); }
+        catch (e) { b.disabled = false; alert("Failed: " + e.message); }
+      });
+      row.appendChild(b);
+    };
+    act("check", "Verified", "the tip still holds (sets last_verified)", () => ({ action: "verified" }));
+    if (tip.status !== "refuted") act("x", "Refute", "the tip is wrong; search stops returning it", () => {
+      const why = prompt("Why is " + tip.id + " wrong?");
+      return why === null ? null : { action: "refuted", reason: why };
+    });
+    act("trash", "Delete", "delete the tip file", () => confirm("Delete tip " + tip.id + "?") ? { action: "delete" } : null);
+    box.appendChild(row);
+  }
+  head.addEventListener("click", () => {
+    if (getSelection().toString()) return;
+    box.hidden = !box.hidden;
+    c.classList.toggle("open", !box.hidden);
+  });
+  c.appendChild(box);
+  return c;
+}
+
+// A collapsed "Tips (N)" toggle and its cards; active tips first, newest first.
+function tipsBlock(sec, key, label, tips) {
+  if (!tips.length) return;
+  tips.sort((a, b) => (a.status !== "active") - (b.status !== "active") || b.modified.localeCompare(a.modified));
+  const open = !!state.q.trim() || state.tipsOpen.includes(key);
+  const tog = ibtn("down", label + " (" + tips.length + ")", "archtoggle" + (open ? "" : " shut"));
+  tog.title = "unverified hints saved by /handoff; search them with /tips";
+  tog.addEventListener("click", () => {
+    const i = state.tipsOpen.indexOf(key);
+    if (i >= 0) state.tipsOpen.splice(i, 1); else state.tipsOpen.push(key);
+    render();
+  });
+  sec.appendChild(tog);
+  if (open) tips.forEach((t) => sec.appendChild(tipCard(t)));
+}
+
 function projectName(p) {
   const t = tilde(p);
   return t === "~" ? "~" : base(t) || t;
@@ -1138,11 +1322,21 @@ function render() {
   if (!data) return;
   closeOpen = null;
   const all = data.tasks;
-  const projects = [...new Set(all.map((t) => t.project))];  // tasks are newest first
+  // Tips are grouped by slug; a project is found through its tasks' slug.
+  const slugOf = {};
+  all.forEach((t) => { if (!(t.project in slugOf)) slugOf[t.project] = t.slug; });
+  const known = new Set(Object.values(slugOf));
+  const tips = data.tips || [];
+  const tipOnly = [...new Set(tips.map((t) => t.slug))].filter((s) => s !== "_global" && !known.has(s));
+  tipOnly.forEach((s) => { slugOf[s] = s; });
+  const projects = [...new Set(all.map((t) => t.project))].concat(tipOnly);  // tasks are newest first
 
   const q = state.q.trim().toLowerCase();
   const matches = (t) => !q || hits.has(keyOf(t)) ||
     [t.task, t.title, t.goal, t.project].some((f) => f && f.toLowerCase().includes(q));
+  const tipMatches = (t) => !q ||
+    [t.id, t.title, t.when, t.keywords, t.body].some((f) => f && f.toLowerCase().includes(q));
+  const tipsOf = (slug) => tips.filter((t) => t.slug === slug && tipMatches(t));
   $("#root").textContent = "Root: " + tilde(data.root) + " · handoffs " + data.version;
 
   const list = $("#list");
@@ -1150,7 +1344,8 @@ function render() {
   let shownAny = false;
   projects.forEach((project) => {
     const tasks = all.filter((t) => t.project === project && matches(t));
-    if (!tasks.length) return;
+    const ptips = tipsOf(slugOf[project]);
+    if (!tasks.length && !ptips.length) return;
     shownAny = true;
     const act = tasks.filter((t) => t.status === "active");
     const arch = tasks.filter((t) => t.status === "archived");
@@ -1169,7 +1364,7 @@ function render() {
     ptitle.appendChild(el("span", "pname", name));
     if (full === "~") ptitle.appendChild(el("span", "phint", " (home)"));
     h.appendChild(ptitle);
-    if (!tasks[0].project_exists) h.appendChild(chip("path missing", "missing"));
+    if (tasks.length && !tasks[0].project_exists) h.appendChild(chip("path missing", "missing"));
     h.appendChild(el("span", "count", act.length + " active"));
     h.addEventListener("click", () => {
       const i = state.collapsed.indexOf(project);
@@ -1180,7 +1375,7 @@ function render() {
     sec.appendChild(h);
     if (!collapsed) {
       act.forEach((t) => sec.appendChild(card(t)));
-      if (!act.length) sec.appendChild(el("div", "none", "No active tasks."));
+      if (!act.length && all.some((t) => t.project === project)) sec.appendChild(el("div", "none", "No active tasks."));
       if (arch.length) {
         const open = !!q || state.archOpen.includes(project);
         const tog = ibtn("down", "Archived (" + arch.length + ")", "archtoggle" + (open ? "" : " shut"));
@@ -1193,11 +1388,19 @@ function render() {
         sec.appendChild(tog);
         if (open) arch.forEach((t) => sec.appendChild(card(t)));
       }
+      tipsBlock(sec, slugOf[project], "Tips", ptips);
     }
     list.appendChild(sec);
   });
+  const gtips = tipsOf("_global");
+  if (gtips.length) {
+    shownAny = true;
+    const sec = el("section", "project");
+    tipsBlock(sec, "_global", "Global tips", gtips);
+    list.appendChild(sec);
+  }
   if (!shownAny) {
-    list.appendChild(el("div", "empty", all.length ? "No tasks match the search." : "No handoffs yet. Save one with /handoff."));
+    list.appendChild(el("div", "empty", all.length || tips.length ? "Nothing matches the search." : "No handoffs yet. Save one with /handoff."));
   }
 }
 

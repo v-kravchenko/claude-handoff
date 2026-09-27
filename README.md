@@ -203,8 +203,15 @@ is expanded at a time. Its buttons:
   `a-z0-9._-`, not taken by another active or archived task of the
   project) and updates the `task:` field of its handoffs.
 
+Tips (see [Tips](#tips)) fold under *Tips (N)* in their project's section;
+global tips under *Global tips (N)* at the bottom. Refuted and superseded
+tips are dimmed. A tap on a tip shows its `when`, keywords and text, and
+the buttons **Verified** (still holds; sets `last_verified`), **Refute**
+(asks why; search stops returning it) and **Delete** (removes the file).
+Moving, superseding and editing tips is left to `/tips`.
+
 The search box filters by task, title and goal at once, and also searches
-the full text of the latest handoffs. The page reads the handoff files on
+the full text of the latest handoffs and of tips. The page reads the handoff files on
 every request and refreshes itself every 30 seconds, so it is never out of
 date.
 
@@ -213,7 +220,7 @@ date.
 | `--port N` | Port to listen on (default `$HANDOFF_PORT` or `8765`); if it is busy, the next nine are tried. `0` picks any free port. |
 | `--host ADDR` | Address to listen on (default `127.0.0.1`). |
 | `--no-open` | Only print the URL. |
-| `--read-only` | Hide the *Done*, *Restore* and *Rename* buttons and refuse changes. |
+| `--read-only` | Hide the *Done*, *Restore*, *Rename* and tip buttons and refuse changes. |
 | `--json` | Print the task data as JSON and exit. |
 
 The browser opens with `open` (macOS), `xdg-open` (Linux desktop),
@@ -297,14 +304,14 @@ Set them in your shell profile or in the `env` block of
   tip files and prints matching titles; it sends nothing anywhere and logs
   only the matched tip ids, not the error text.
 - The dashboard listens on `127.0.0.1` only and reads nothing but handoff
-  files of listed tasks. It rejects requests whose `Host` header is not
+  files of listed tasks and tip files. It rejects requests whose `Host` header is not
   local, which blocks DNS-rebinding attacks from web pages. Its only changes
-  are *Done*, *Restore* and *Rename*: they need a random token that is embedded in the
+  are *Done*, *Restore*, *Rename* and the tip buttons: they need a random token that is embedded in the
   page at startup and sent in a custom header, so other web pages cannot
   trigger them. `--read-only` turns them off. Other programs on the same
   machine (on Android, other apps) are not web pages: while the dashboard
-  runs they can read it and, unless it is `--read-only`, also use *Done*,
-  *Restore* and *Rename*.
+  runs they can read it and, unless it is `--read-only`, also use its
+  buttons.
 
 ## Development
 
