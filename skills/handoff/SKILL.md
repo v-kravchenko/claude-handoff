@@ -33,6 +33,12 @@ Existing tasks in this project (`@task | title | last saved`):
 ${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" tasks
 ```
 
+Tips:
+
+```!
+${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" tips status
+```
+
 Arguments: $ARGUMENTS
 
 ## Steps
@@ -55,7 +61,8 @@ Arguments: $ARGUMENTS
    and gotchas that git, the code, the changelog and CLAUDE.md don't already
    record; don't re-litigate settled points.
 5. If nothing happened since `latest` (no changes, decisions or new facts),
-   don't write a new file: reply that `latest` is still current and stop.
+   don't write a new file: do step 9 (tips) only, then reply that `latest` is
+   still current (plus the tips line) and stop.
 6. Write from the current state, not by appending to the old handoff. Review
    the whole conversation and fill the template below. Be specific: exact
    file paths (backticked, `path:line` where useful), commands, error
@@ -72,8 +79,40 @@ Arguments: $ARGUMENTS
 7. Never include secrets (tokens, passwords, keys, credentials) — reference
    where they live instead.
 8. Write the file with the Write tool to the `file` path from step 3.
-9. Run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" prune <task>` to keep only recent handoffs.
-10. Reply with `@<task>`, the file path and a 2–3 line summary. Nothing else.
+9. Save tips, only if the Context says `tips: on` (see Tips below).
+10. Run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" prune <task>` to keep only recent handoffs.
+11. Reply with `@<task>`, the file path and a 2–3 line summary; with tips on,
+    add a line `tips: +<added> ~<updated> x<superseded or refuted>`. Nothing else.
+
+## Tips
+
+Tips are short hints for any future session in this project (or on this
+machine), found later with `/tips`. They are not about this task's state.
+Below, `tips` means `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" tips`.
+
+1. Pick 0–3 candidates; zero is a normal outcome. Keep only what cost effort
+   to learn in this session: a dead end, a surprise, the fix for an error, a
+   user correction. Gate: will a future agent act better because of it? Skip
+   generic advice, one-off state, ideas not adopted, anything the code, git or
+   CLAUDE.md already say, raw logs, and anything with secrets.
+2. Level: would it hold in another project on this machine? Yes: `global`;
+   no: `project`; unsure: `project`. A tip taken from web pages, issues or
+   foreign code gets `origin: web` and stays `project`. Add `env:` (the value
+   `tips new` prints) when it depends on the OS or environment.
+3. Dedupe: run `tips search <the candidate's keywords>` and `tips show` close
+   hits. Then:
+   - same tip: nothing to write (`tips verified ID` if this session confirmed it);
+   - it refines a tip: rewrite that tip's file with Write, keeping its id;
+   - it contradicts a tip: add the new tip, then `tips supersede OLD NEW`;
+   - no match: add it.
+4. Add: `tips new <id> <project|global>` (id: a short lowercase slug) prints
+   `file`, `env` and `source`; on `EXISTS`, pick another id or update that tip.
+   Write the file with the Write tool from the tip template below, in English.
+   `keywords` decide whether the tip is found: exact error messages (quoted),
+   commands, tools, file names, synonyms, and Ukrainian words if the topic was
+   discussed in Ukrainian.
+5. For tips this session relied on and did not mark yet: `tips verified ID` if
+   they held, `tips refuted ID <why>` if not.
 
 ## Template
 
@@ -113,4 +152,22 @@ How the user wants things done, corrections they made during the session.
 
 ## Verify
 How to check the current state works (tests, commands, expected output).
+```
+
+## Tip template
+
+```markdown
+---
+title: <one line: the rule>
+when: <the situation where it applies>
+keywords: <comma-separated; exact error messages in quotes>
+env: <only if environment-specific: the value from `tips new`>
+cites: <optional: path[:line]@commit, comma-separated>
+origin: <failure | discovery | user | web>
+source: <source from `tips new`> task=<task> session=${CLAUDE_SESSION_ID}
+status: active
+---
+Tip: <the rule plus a concrete anchor: file, command, version>
+Why: <the reason>
+Verify: <a cheap command or check that shows whether it still holds>
 ```

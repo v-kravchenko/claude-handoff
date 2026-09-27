@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: shellcheck
-        run: shellcheck skills/handoff/handoff.sh install.sh tests/test.sh
+        run: shellcheck -x skills/handoff/handoff.sh skills/handoff/tips.sh install.sh tests/test.sh
       - name: python syntax
         run: python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' bin/handoffs
       - name: validate JSON

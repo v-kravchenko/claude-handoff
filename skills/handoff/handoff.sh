@@ -243,7 +243,10 @@ cmd_show() {
   cat "$f"
 }
 
-USAGE="usage: handoff.sh PROJECT_DIR meta|git|tasks|new TASK|prune TASK|done TASK|restore TASK|stale FILE|show [@TASK|FILE]"
+# shellcheck source=SCRIPTDIR/tips.sh
+. "$(dirname "${BASH_SOURCE[0]}")/tips.sh"
+
+USAGE="usage: handoff.sh PROJECT_DIR meta|git|tasks|new TASK|prune TASK|done TASK|restore TASK|stale FILE|show [@TASK|FILE]|tips ..."
 
 if [[ -z $PROJECT || ! -d $PROJECT ]]; then
   echo "$USAGE"
@@ -260,6 +263,7 @@ case "$CMD" in
   restore) cmd_restore "${3:-}" ;;
   stale) cmd_stale "${3:-}" ;;
   show) cmd_show "${3:-}" ;;
+  tips) shift 2; cmd_tips "$@" ;;
   *) echo "$USAGE" ;;
 esac
 exit 0

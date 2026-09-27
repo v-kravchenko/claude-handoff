@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Tips: `/handoff` saves 0–3 short, unverified hints per session (project
+  or global level, with a `Verify` step); `/tips` searches the current
+  project and global tips; `handoff.sh tips ...` manages them
+  (`search`, `show`, `verified`, `refuted`, `supersede`, `move`).
+- A `PostToolUseFailure` hook for Bash that adds matching tip titles to the
+  context when a command fails.
+- `install.sh` asks whether to install the dashboard and tips (or takes
+  `--dashboard`, `--no-dashboard`, `--tips`, `--no-tips`). Tips add a marked
+  block to `~/.claude/CLAUDE.md` and the hook to `~/.claude/settings.json`;
+  `--uninstall` removes both. It never touches a `tips` skill that is not
+  ours and remembers the choices in `skills/handoff/install.conf` for
+  installs without a terminal.
+
+### Changed
+
+- `handoffs` ignores the `_tips` store when listing projects.
+
 ## [1.1.3] - 2026-09-26
 
 ### Added

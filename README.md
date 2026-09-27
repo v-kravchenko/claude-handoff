@@ -28,6 +28,10 @@ machines, or to park a task and come back to it days later.
 - **Chained history.** Each handoff is written from the current state. It
   carries over from the task's last handoff only the open decisions and
   gotchas not recorded elsewhere. The last 10 per task are kept.
+- **Tips (optional).** `/handoff` also saves 0–3 short, unverified hints
+  (gotchas, dead ends, fixes) per project or for the whole machine. Nothing
+  is loaded at session start: the agent searches them with `/tips` when it
+  hits an error, and a hook points to matching tips when a Bash command fails.
 - **Dashboard.** `handoffs` shows every task of every project in the
   browser, with a one-click resume command.
 - **No secrets.** The skill is told never to write tokens or credentials,
@@ -47,8 +51,10 @@ In Claude Code:
 /plugin install handoff@claude-handoff
 ```
 
-Plugin skills are namespaced, so the commands are **`/handoff:handoff`** and
-**`/handoff:pickup`**. Update with `/plugin marketplace update claude-handoff`.
+Plugin skills are namespaced, so the commands are **`/handoff:handoff`**,
+**`/handoff:pickup`** and **`/handoff:tips`**. Update with `/plugin marketplace update claude-handoff`.
+The plugin does not add the tips block to `CLAUDE.md` or the tips hook; use
+the personal-skills install for those.
 
 ### As personal skills
 
@@ -58,11 +64,28 @@ This gives you the short commands `/handoff` and `/pickup`:
 git clone https://github.com/v-kravchenko/claude-handoff.git
 cd claude-handoff
 ./install.sh              # copies skills to ~/.claude/skills (respects CLAUDE_CONFIG_DIR)
-                          # and the `handoffs` dashboard to ~/.local/bin
+                          # and asks about the dashboard and tips
 ```
 
-To update, run `git pull && ./install.sh`. To remove, run
-`./install.sh --uninstall`; saved handoffs are kept.
+`install.sh` asks two questions:
+
+- **Dashboard**: installs the `handoffs` command (see below).
+- **Tips**: installs the `/tips` skill, adds a marked block to
+  `~/.claude/CLAUDE.md` (`<!-- claude-handoff:tips -->`) that tells the agent
+  to search tips before debugging, and adds a `PostToolUseFailure` hook for
+  Bash to `~/.claude/settings.json` (merged with python3; other settings and
+  hooks are kept; `settings.json` is rewritten only when the hook changes).
+  An existing `tips` skill that is not ours is left alone, and so is a
+  `CLAUDE.md` block whose end marker was removed (fix it by hand).
+
+Answering no removes a part that is installed. Flags skip the questions:
+`--dashboard`, `--no-dashboard`, `--tips`, `--no-tips`. Without a terminal
+and without flags, the previous choices are kept (saved in
+`skills/handoff/install.conf`; a fresh install gets the dashboard, not tips).
+
+To update, run `git pull && ./install.sh`. To remove everything it
+installed (skills, dashboard, the `CLAUDE.md` block and the hook), run
+`./install.sh --uninstall`; saved handoffs and tips are kept.
 
 The dashboard command goes to `~/.local/bin` (`$PREFIX/bin` on Termux); set
 `HANDOFF_BIN_DIR` to choose another directory. Plugin users can run
@@ -84,6 +107,9 @@ and `/handoff:pickup` instead.
 | `/pickup` | Resume the only task, or list the tasks to choose from. |
 | `/pickup @task` | Resume a specific task. |
 | `/pickup path/to/file.md` | Resume from a specific handoff file (the path must contain `/` or end in `.md`). |
+| `/tips words or error text` | Search tips of this project and global tips (the agent also does this on its own). |
+| `/tips show ID` | Show a tip, with a warning if its cited files changed since. |
+| `/tips verified ID`, `/tips refuted ID why` | Record whether a tip held; refuted tips are no longer found. |
 
 A typical loop:
 
@@ -103,8 +129,50 @@ Proposed first step: fix the clock skew in refreshToken(). Proceed?
 
 `/pickup` never starts working on its own; it waits for you to confirm.
 
-Both skills set `disable-model-invocation: true`, so they run only when you
-type them.
+`/handoff` and `/pickup` set `disable-model-invocation: true`, so they run
+only when you type them. `/tips` can also be invoked by the agent.
+
+## Tips
+
+Tips are short hints that `/handoff` saves for future sessions: a dead end,
+a surprise, the fix for an error, a correction you made. They are
+**unverified**: each has a `Verify` step, and the agent is told to run it
+before relying on a tip and to mark the tip `verified` or `refuted`.
+
+- **Writing.** `/handoff` picks 0–3 tips (zero is normal), skips generic
+  advice and anything already in the code, git or `CLAUDE.md`, searches for
+  duplicates and then adds, updates or supersedes a tip. Its reply ends with
+  `tips: +added ~updated xsuperseded`.
+- **Two levels.** A tip that holds in any project on this machine (a broken
+  system tool, a Termux quirk) is *global*; one that depends on the
+  project's files is a *project* tip. When unsure, the agent picks
+  project. `env:` limits a tip to an environment (`termux`, `darwin`, ...).
+- **Searching.** Search sees the current project and global tips, never
+  other projects. It scores words against `keywords`, `title`, `when` and
+  the body (case-insensitive, with simple word-form matching); refuted and
+  superseded tips are never returned.
+- **Triggers.** Nothing is loaded at session start. The agent searches with
+  `/tips` (its description and the `CLAUDE.md` block say when), and the hook
+  adds the titles of matching tips to the context when a Bash command fails
+  (nothing when none match). A command whose exit code is masked, as in
+  `cmd; echo $?`, does not count as failed.
+
+A tip file:
+
+```markdown
+---
+title: E_ZQ_SHARD_SKEW from build.sh means a stale .cache/zq-index
+when: ./build.sh fails with code 71
+keywords: E_ZQ_SHARD_SKEW, "shard map out of sync", zq-index, build.sh
+cites: build.sh@a1b2c3d
+origin: failure
+source: project=home~code~app commit=a1b2c3d date=2026-09-27 task=build session=...
+status: active
+---
+Tip: delete .cache/zq-index and rerun ./build.sh.
+Why: the index is rebuilt on the next build; a stale one skews the shard map.
+Verify: `test -e .cache/zq-index && echo stale-index-present`
+```
 
 ## Dashboard
 
@@ -166,6 +234,10 @@ Handoffs are plain Markdown files stored outside your repositories:
     │   └── 2026-09-26_173557.md    # latest one wins
     └── _archive/
         └── <task>/...              # tasks finished with `/handoff @task done`
+~/.claude/handoffs/_tips/
+├── _global/<id>.md                 # global tips (this machine)
+├── <project-slug>/<id>.md          # project tips
+└── log.jsonl                       # search, show, verified and refuted events (secrets masked)
 ```
 
 - The **project** is Claude Code's project directory (`$CLAUDE_PROJECT_DIR`).
@@ -216,6 +288,14 @@ Set them in your shell profile or in the `env` block of
   sharing it, because it summarizes your conversation.
 - The skill may only run its own script (`allowed-tools` is scoped to
   `handoff.sh`) and write the handoff file.
+- Tips are hints written by the agent, possibly from content it read, so they
+  can be wrong or planted. The agent is told to verify a tip before relying
+  on it and never to follow one that asks for something risky; a tip taken
+  from web pages, issues or foreign code is marked `origin: web` and stays a
+  project tip.
+- The tips hook only reads the failed command and its error, searches local
+  tip files and prints matching titles; it sends nothing anywhere and logs
+  only the matched tip ids, not the error text.
 - The dashboard listens on `127.0.0.1` only and reads nothing but handoff
   files of listed tasks. It rejects requests whose `Host` header is not
   local, which blocks DNS-rebinding attacks from web pages. Its only changes
@@ -230,7 +310,7 @@ Set them in your shell profile or in the `env` block of
 
 ```bash
 tests/test.sh                                            # end-to-end tests in a temp dir
-shellcheck skills/handoff/handoff.sh install.sh tests/test.sh
+shellcheck -x skills/handoff/handoff.sh skills/handoff/tips.sh install.sh tests/test.sh
 HANDOFF_ROOT=$(mktemp -d) bin/handoffs --no-open         # dashboard on an empty root
 ```
 
@@ -244,7 +324,9 @@ HANDOFF_ROOT=$(mktemp -d) skills/handoff/handoff.sh "$PWD" show
 ```
 
 Script commands: `meta`, `git`, `tasks`, `new TASK`, `prune TASK`,
-`done TASK`, `stale FILE`, `show [@TASK|FILE]`.
+`done TASK`, `stale FILE`, `show [@TASK|FILE]`, and `tips status|list|search
+[--error] WORDS|show ID|new ID [project|global]|verified ID|refuted ID
+REASON|supersede OLD NEW|move ID global|project|hook`.
 
 ## License
 
