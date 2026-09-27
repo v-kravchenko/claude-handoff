@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- A `UserPromptSubmit` tips hook: when the request contains a tip's keyword
+  (at a word start; one item of 5+ characters or two shorter ones), the
+  titles of up to 3 matching tips are added to the context, each tip once
+  per session. Our own `/tips`, `/handoff` and `/pickup` are skipped; only
+  matched ids are logged, never the prompt. `install.sh --tips` adds it next
+  to the failure hook.
+
+### Changed
+
+- The `CLAUDE.md` tips block also asks to search tips before answering
+  how-to or procedure questions ("how do we release?") and to check tips a
+  hook lists.
+
 ## [1.2.0] - 2026-09-27
 
 ### Added

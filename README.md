@@ -31,7 +31,8 @@ machines, or to park a task and come back to it days later.
 - **Tips (optional).** `/handoff` also saves 0–3 short, unverified hints
   (gotchas, dead ends, fixes) per project or for the whole machine. Nothing
   is loaded at session start: the agent searches them with `/tips` when it
-  hits an error, and a hook points to matching tips when a Bash command fails.
+  hits an error, and hooks point to matching tips when a request mentions
+  their keywords or a Bash command fails.
 - **Dashboard.** `handoffs` shows every task of every project in the
   browser, with a one-click resume command.
 - **No secrets.** The skill is told never to write tokens or credentials,
@@ -54,7 +55,7 @@ In Claude Code:
 Plugin skills are namespaced, so the commands are **`/handoff:handoff`** and
 **`/handoff:pickup`**. Update with `/plugin marketplace update claude-handoff`.
 The plugin has no [tips](#tips): they need the `/tips` skill, a block in
-`CLAUDE.md` and a hook, so they come only with the personal-skills install.
+`CLAUDE.md` and hooks, so they come only with the personal-skills install.
 
 ### As personal skills
 
@@ -72,9 +73,10 @@ cd claude-handoff
 - **Dashboard**: installs the `handoffs` command (see below).
 - **Tips**: installs the `/tips` skill, adds a marked block to
   `~/.claude/CLAUDE.md` (`<!-- claude-handoff:tips -->`) that tells the agent
-  to search tips before debugging, and adds a `PostToolUseFailure` hook for
-  Bash to `~/.claude/settings.json` (merged with python3; other settings and
-  hooks are kept; `settings.json` is rewritten only when the hook changes).
+  to search tips before debugging and before answering how-to questions, and
+  adds a `UserPromptSubmit` hook and a `PostToolUseFailure` hook for Bash to
+  `~/.claude/settings.json` (merged with python3; other settings and hooks
+  are kept; `settings.json` is rewritten only when the hooks change).
   An existing `tips` skill that is not ours is left alone, and so is a
   `CLAUDE.md` block whose end marker was removed (fix it by hand).
 
@@ -84,7 +86,7 @@ and without flags, the previous choices are kept (saved in
 `skills/handoff/install.conf`; a fresh install gets the dashboard, not tips).
 
 To update, run `git pull && ./install.sh`. To remove everything it
-installed (skills, dashboard, the `CLAUDE.md` block and the hook), run
+installed (skills, dashboard, the `CLAUDE.md` block and the hooks), run
 `./install.sh --uninstall`; saved handoffs and tips are kept.
 
 The dashboard command goes to `~/.local/bin` (`$PREFIX/bin` on Termux); set
@@ -152,9 +154,11 @@ before relying on a tip and to mark the tip `verified` or `refuted`.
   the body (case-insensitive, with simple word-form matching); refuted and
   superseded tips are never returned.
 - **Triggers.** Nothing is loaded at session start. The agent searches with
-  `/tips` (its description and the `CLAUDE.md` block say when), and the hook
-  adds the titles of matching tips to the context when a Bash command fails
-  (nothing when none match). A command whose exit code is masked, as in
+  `/tips` (its description and the `CLAUDE.md` block say when). Two hooks add
+  the titles of matching tips to the context (nothing when none match): one
+  on each request whose words start with a tip's keyword (one item of 5+
+  characters or two shorter ones; each tip once per session), one when a
+  Bash command fails. A command whose exit code is masked, as in
   `cmd; echo $?`, does not count as failed.
 
 A tip file:
@@ -299,9 +303,9 @@ Set them in your shell profile or in the `env` block of
   on it and never to follow one that asks for something risky; a tip taken
   from web pages, issues or foreign code is marked `origin: web` and stays a
   project tip.
-- The tips hook only reads the failed command and its error, searches local
-  tip files and prints matching titles; it sends nothing anywhere and logs
-  only the matched tip ids, not the error text.
+- The tips hooks only read the request or the failed command and its error,
+  search local tip files and print matching titles; they send nothing
+  anywhere and log only the matched tip ids, not the prompt or error text.
 - The dashboard listens on `127.0.0.1` only and reads nothing but handoff
   files of listed tasks and tip files. It rejects requests whose `Host` header is not
   local, which blocks DNS-rebinding attacks from web pages. Its only changes
@@ -332,7 +336,7 @@ HANDOFF_ROOT=$(mktemp -d) skills/handoff/handoff.sh "$PWD" show
 Script commands: `meta`, `git`, `tasks`, `new TASK`, `prune TASK`,
 `done TASK`, `stale FILE`, `show [@TASK|FILE]`, and `tips status|list|search
 [--error] WORDS|show ID|new ID [project|global]|verified ID|refuted ID
-REASON|supersede OLD NEW|move ID global|project|hook`.
+REASON|supersede OLD NEW|move ID global|project|hook|prompt-hook`.
 
 ## License
 

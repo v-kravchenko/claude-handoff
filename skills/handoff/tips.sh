@@ -79,6 +79,8 @@ set_field() {
 # Scores active tips; prints "score<TAB>level<TAB>id<TAB>title", best first.
 # Query mode: words of QUERY vs keywords (3), title/when (2), body (1);
 # words longer than 6 chars are cut to 5 (cheap stemming).
+# Prompt mode: keyword items (3+ chars) found at a word start in the prompt;
+# a tip needs 2 items or one of 5+ chars (or with punctuation or spaces).
 # Error mode: keyword items (4+ chars) found in the error text; a tip needs
 # 2 items or one of 10+ chars; a quoted item may contain commas.
 # Text goes through ENVIRON: awk -v would expand backslash escapes.
@@ -100,6 +102,15 @@ tips_score() {
       a[++n] = cur
       return n
     }
+    # True when IT occurs in S (which starts with a space) at a word start.
+    function atword(s, it,   p, off) {
+      off = 0
+      while ((p = index(substr(s, off + 1), it))) {
+        off += p
+        if (substr(s, off - 1, 1) !~ /[[:alnum:]_]/) return 1
+      }
+      return 0
+    }
     function flush(   id, level, n, i, t, s, e, it, items, w, kw, ti, wh, bo, score, hits, strong, ok) {
       if (fname == "") return
       id = fname; sub(/.*\//, "", id); sub(/\.md$/, "", id)
@@ -115,6 +126,14 @@ tips_score() {
         for (i = 1; i <= n; i++) {
           it = tolower(items[i]); gsub(/^ +| +$/, "", it)
           if (length(it) >= 4 && index(e, it)) { hits++; if (length(it) >= 10) strong = 1 }
+        }
+        if (!(strong || hits >= 2)) return
+        score = hits
+      } else if (mode == "prompt") {
+        e = " " tolower(q); n = splitkw(F["keywords"], items); hits = 0; strong = 0
+        for (i = 1; i <= n; i++) {
+          it = tolower(items[i]); gsub(/^ +| +$/, "", it)
+          if (length(it) >= 3 && atword(e, it)) { hits++; if (length(it) >= 5 || it ~ /[^[:alnum:]_-]/) strong = 1 }
         }
         if (!(strong || hits >= 2)) return
         score = hits
@@ -139,7 +158,7 @@ tips_score() {
     { body = body " " $0 }
     END { flush() }' "${files[@]}" |
     sort -t "$(printf '\t')" -k1,1nr -k3,3 |
-    awk -F '\t' -v mode="$mode" 'NR == 1 { top = $1 } mode == "error" || ($1 >= 3 && $1 * 2 >= top)' |
+    awk -F '\t' -v mode="$mode" 'NR == 1 { top = $1 } mode != "query" || ($1 >= 3 && $1 * 2 >= top)' |
     head -n "$TIPS_MAX"
 }
 
@@ -295,12 +314,45 @@ tips_hook() {
   printf '{"hookSpecificOutput":{"hookEventName":"PostToolUseFailure","additionalContext":%s}}\n' "$(json_str "$text")"
 }
 
-TIPS_USAGE="usage: handoff.sh PROJECT_DIR tips status|list|search [--error] WORDS|show ID|new ID [project|global]|verified ID|refuted ID REASON|supersede OLD NEW|move ID global|project|hook"
+# UserPromptSubmit hook: reads the hook JSON on stdin, prints
+# additionalContext with tip titles matching the prompt, or nothing.
+# A tip is shown once per session; our own slash commands are skipped.
+tips_prompt_hook() {
+  local in prompt sid out n text seen="" f
+  in=$(head -c 65536 | tr -d '\n')
+  tips_on && [[ -d $TIPS_ROOT ]] || return
+  prompt=$(sed -nE 's/.*"prompt":[[:space:]]*"(([^"\\]|\\.)*)".*/\1/p' <<<"$in" | head -c 4000)
+  prompt=$(sed 's/\\[nt]/ /g; s/\\"/"/g; s/\\\\/\\/g' <<<"$prompt")
+  [[ -n ${prompt// /} ]] || return
+  [[ $prompt =~ ^[[:space:]]*/(tips|handoff|pickup)([[:space:]]|$) ]] && return
+  sid=$(sed -nE 's/.*"session_id":[[:space:]]*"([A-Za-z0-9_-]{1,100})".*/\1/p' <<<"$in")
+  if [[ -n $sid ]]; then
+    f="${TMPDIR:-/tmp}/claude-handoff-tips/$sid"
+    [[ -f $f ]] && seen=$(<"$f")
+  fi
+  tips_init
+  out=$(tips_score prompt "$prompt" | awk -F '\t' -v seen="$seen" '
+    BEGIN { n = split(seen, a, "\n"); for (i = 1; i <= n; i++) s[a[i]] = 1 }
+    !($3 in s)' | head -n 3)
+  [[ -n $out ]] || return
+  if [[ -n $sid ]]; then
+    mkdir -p "${f%/*}" 2>/dev/null && cut -f3 <<<"$out" >>"$f" 2>/dev/null
+  fi
+  n=$(grep -c . <<<"$out")
+  # The prompt is not logged: it may hold secrets. The matched ids are.
+  tips_log prompt-hook "$(cut -f3 <<<"$out" | paste -sd, -)" "" "$n"
+  text="claude-handoff: $n unverified tip(s) may be relevant to this request:"$'\n'
+  text+=$(awk -F '\t' '{ printf "- %s (%s): %s\n", $3, $2, $4 }' <<<"$out")
+  text+=$'\n'"If one applies, run /tips show <id> and its Verify step before relying on it."
+  printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":%s}}\n' "$(json_str "$text")"
+}
+
+TIPS_USAGE="usage: handoff.sh PROJECT_DIR tips status|list|search [--error] WORDS|show ID|new ID [project|global]|verified ID|refuted ID REASON|supersede OLD NEW|move ID global|project|hook|prompt-hook"
 
 cmd_tips() {
   local sub=${1:-}
   shift 2>/dev/null
-  [[ $sub == hook ]] || tips_init
+  [[ $sub == hook || $sub == prompt-hook ]] || tips_init
   case $sub in
     status) tips_status ;;
     list) tips_list ;;
@@ -312,6 +364,7 @@ cmd_tips() {
     supersede) tips_supersede "${1:-}" "${2:-}" ;;
     move) tips_move "${1:-}" "${2:-}" ;;
     hook) tips_hook ;;
+    prompt-hook) tips_prompt_hook ;;
     *) echo "$TIPS_USAGE" ;;
   esac
 }

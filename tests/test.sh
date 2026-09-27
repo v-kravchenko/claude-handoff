@@ -391,6 +391,37 @@ OUT=$("$TS/handoff/handoff.sh" "$TP" tips hook </dev/null)
 assert "hook is silent on empty input" [ -z "$OUT" ]
 assert "hook logs the matched ids" grep -q '"event":"hook","project":"'"$KEYDIR"'","id":"no-tmp"' "$TROOT/log.jsonl"
 assert "hook does not log the error text" [ "$(grep '"event":"hook"' "$TROOT/log.jsonl" | grep -c 'failed to create')" = 0 ]
+
+# The prompt hook reads Claude Code's UserPromptSubmit JSON: keyword items at a
+# word start, 2 items or one of 5+ chars, each tip once per session.
+tip "$TROOT/$KEYDIR" rel "Release needs gh release" 'реліз, tag, gh release create'
+ph() { OUT=$(TMPDIR="$TMP/ph" "${2:-$TS}/handoff/handoff.sh" "$TP" tips prompt-hook <<<"$1"); }
+ph '{"session_id":"p1","prompt":"Як ми релізимо?"}' "$TOFF"
+assert "prompt hook is silent when tips are off" [ -z "$OUT" ]
+ph '{"session_id":"p1","prompt":"Як ми релізимо?"}'
+if python3 -c 'import json,sys; d=json.loads(sys.argv[1])["hookSpecificOutput"]; assert d["hookEventName"]=="UserPromptSubmit"; assert "rel (project): Release needs gh release" in d["additionalContext"]' "$OUT" 2>/dev/null
+then ok; else fail "prompt hook prints valid JSON naming a tip matched by a word prefix"; fi
+ph '{"session_id":"p1","prompt":"і ще раз реліз"}'
+assert "prompt hook shows a tip once per session" [ -z "$OUT" ]
+ph '{"session_id":"p2","prompt":"Як ми релізимо?"}'
+has "rel (project)" "prompt hook shows the tip again in another session"
+ph '{"session_id":"p3","prompt":"перереліз"}'
+assert "prompt hook needs a word start" [ -z "$OUT" ]
+ph '{"session_id":"p3","prompt":"fix the tag"}'
+assert "prompt hook skips one short item" [ -z "$OUT" ]
+ph '{"session_id":"p3","prompt":"tag it, then gh release create"}'
+has "rel (project)" "prompt hook matches a multi-word item"
+ph '{"session_id":"p4","prompt":"/tips реліз"}'
+assert "prompt hook skips our slash commands" [ -z "$OUT" ]
+ph '{"prompt":"say \"Реліз\"\nnow"}'
+has "rel (project)" "prompt hook works without a session id and unescapes JSON"
+ph '{"session_id":"p5","prompt":"hello world"}'
+assert "prompt hook is silent without a match" [ -z "$OUT" ]
+ph ''
+assert "prompt hook is silent on empty input" [ -z "$OUT" ]
+assert "prompt hook logs the matched ids" grep -q '"event":"prompt-hook","project":"'"$KEYDIR"'","id":"rel"' "$TROOT/log.jsonl"
+assert "prompt hook does not log the prompt" [ "$(grep '"event":"prompt-hook"' "$TROOT/log.jsonl" | grep -c 'релізимо')" = 0 ]
+rm -f "$TROOT/$KEYDIR/rel.md"
 TNM="$TMP/tipsnomark"; mkdir -p "$TNM/tips"; cp -R "$SKILLS/handoff" "$TNM/"
 printf -- '---\nname: tips\n---\nmine\n' >"$TNM/tips/SKILL.md"
 OUT=$("$TNM/handoff/handoff.sh" "$TP" tips status)
@@ -721,12 +752,16 @@ EOF
   # scount PY_EXPR: evaluates PY_EXPR over s (settings.json) and prints it.
   scount() { python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$IC/settings.json" "$1"; }
   OURS='sum("tips hook" in h["command"] for g in s["hooks"]["PostToolUseFailure"] for h in g["hooks"])'
+  POURS='sum("tips prompt-hook" in h["command"] for g in s["hooks"].get("UserPromptSubmit", []) for h in g["hooks"])'
   inst --tips --no-dashboard
   assert "install --tips copies the tips skill" [ -f "$IC/skills/tips/SKILL.md" ]
   assert "install --no-dashboard skips the dashboard" [ ! -e "$TMP/ibin/handoffs" ]
   assert "install --tips adds the CLAUDE.md block" grep -qF '<!-- claude-handoff:tips -->' "$IC/CLAUDE.md"
   assert "install --tips keeps CLAUDE.md content" grep -qx 'keep me' "$IC/CLAUDE.md"
   assert "install --tips adds the hook" [ "$(scount "$OURS")" = 1 ]
+  assert "install --tips adds the prompt hook" [ "$(scount "$POURS")" = 1 ]
+  assert "the prompt hook runs the installed script" [ "$(scount 's["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]')" = "\"$IC/skills/handoff/handoff.sh\" \"\${CLAUDE_PROJECT_DIR:-.}\" tips prompt-hook" ]
+  assert "install --tips adds the how-to trigger" grep -q 'how-to or procedure questions' "$IC/CLAUDE.md"
   assert "install --tips keeps other settings" [ "$(scount 's["theme"]')" = dark ]
   assert "the hook runs the installed script" [ "$(scount 's["hooks"]["PostToolUseFailure"][1]["hooks"][0]["command"]')" = "\"$IC/skills/handoff/handoff.sh\" \"\${CLAUDE_PROJECT_DIR:-.}\" tips hook" ]
   inst
@@ -735,6 +770,7 @@ EOF
   inst --tips --dashboard
   assert "reinstall keeps one CLAUDE.md block" [ "$(grep -cxF '<!-- claude-handoff:tips -->' "$IC/CLAUDE.md")" = 1 ]
   assert "reinstall keeps one hook" [ "$(scount "$OURS")" = 1 ]
+  assert "reinstall keeps one prompt hook" [ "$(scount "$POURS")" = 1 ]
   assert "install --dashboard adds the dashboard" [ -x "$TMP/ibin/handoffs" ]
   inst --no-tips --no-dashboard
   assert "--no-tips removes the tips skill" [ ! -e "$IC/skills/tips" ]
@@ -747,6 +783,7 @@ EOF
   assert "uninstall removes the dashboard" [ ! -e "$TMP/ibin/handoffs" ]
   assert "uninstall removes the CLAUDE.md block" [ "$(cat "$IC/CLAUDE.md")" = "$(printf '# mine\nkeep me')" ]
   assert "uninstall removes our hook" [ "$(scount "$OURS")" = 0 ]
+  assert "uninstall removes our prompt hook" [ "$(scount "$POURS")" = 0 ]
   printf '{"only": "ours"}\n' >"$IC/settings.json"
   inst --tips; inst --uninstall
   assert "uninstall drops an emptied hooks key" [ "$(scount 'sorted(s)')" = "['only']" ]
@@ -788,9 +825,9 @@ EOF
   printf '{"theme": "dark"}\n' >"$IC/settings.json"
   inst --no-tips
   assert "--no-tips without a hook keeps settings.json as is" [ "$(cat "$IC/settings.json")" = '{"theme": "dark"}' ]
-  lacks "the tips hook" "--no-tips without a hook reports nothing"
+  lacks "the tips hooks" "--no-tips without a hook reports nothing"
   inst --tips; cp "$IC/settings.json" "$TMP/s.orig"; inst --tips
-  lacks "the tips hook" "reinstall with the same hook reports nothing"
+  lacks "the tips hooks" "reinstall with the same hook reports nothing"
   assert "reinstall with the same hook keeps settings.json" cmp -s "$IC/settings.json" "$TMP/s.orig"
   # Choices are kept in install.conf; an install without it gets the dashboard.
   inst --no-dashboard --tips; inst

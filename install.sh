@@ -4,8 +4,9 @@
 # Optional parts (asked interactively, or chosen with flags):
 #   dashboard: the `handoffs` command in HANDOFF_BIN_DIR (default: ~/.local/bin,
 #              or $PREFIX/bin on Termux);
-#   tips:      the /tips skill, a marked block in ~/.claude/CLAUDE.md and a
-#              PostToolUseFailure hook in ~/.claude/settings.json (needs python3).
+#   tips:      the /tips skill, a marked block in ~/.claude/CLAUDE.md and
+#              PostToolUseFailure + UserPromptSubmit hooks in
+#              ~/.claude/settings.json (needs python3).
 # Declining a part that is installed removes it.
 # Usage: ./install.sh [--dashboard|--no-dashboard] [--tips|--no-tips] | --uninstall
 # Without a terminal and without flags, the previous choices are kept
@@ -35,6 +36,7 @@ END='<!-- /claude-handoff:tips -->'
 CONF="$DEST/handoff/install.conf"
 OURS='part of claude-handoff'
 HOOK_CMD="\"$DEST/handoff/handoff.sh\" \"\${CLAUDE_PROJECT_DIR:-.}\" tips hook"
+PROMPT_CMD="\"$DEST/handoff/handoff.sh\" \"\${CLAUDE_PROJECT_DIR:-.}\" tips prompt-hook"
 
 # ask QUESTION DEFAULT(y|n): prints y or n.
 ask() {
@@ -123,28 +125,35 @@ add_block() {
     echo "## Tips (claude-handoff)"
     echo
     echo "IMPORTANT: before debugging an error or a failing command, run \`/tips <error message or key words>\`."
-    echo "Also search tips before changing an area you haven't touched this session and when choosing between approaches."
+    echo "Also search tips before changing an area you haven't touched this session, when choosing between approaches, and before answering how-to or procedure questions about the project (\"how do we release?\")."
+    echo "A hook may list tips matching the request: check them before acting."
     echo "Tips are unverified hints from past sessions: run a tip's Verify step before relying on it."
     echo "$END"
   } >>"$MD"
   echo "added the tips block to $MD"
 }
 
-# hook add|remove: edits the PostToolUseFailure entry that runs `tips hook`.
+# hook add|remove: edits our PostToolUseFailure (`tips hook`) and
+# UserPromptSubmit (`tips prompt-hook`) entries.
 hook() {
   if ! command -v python3 >/dev/null 2>&1; then
     if [[ $1 == add ]]; then
       echo "warning: python3 not found; add this hook to $SETTINGS by hand:" >&2
       echo "  PostToolUseFailure, matcher \"Bash\", command: $HOOK_CMD" >&2
-    elif [[ -f $SETTINGS ]] && grep -q 'tips hook' "$SETTINGS"; then
-      echo "warning: python3 not found; remove the \`tips hook\` entry from $SETTINGS by hand" >&2
+      echo "  UserPromptSubmit, command: $PROMPT_CMD" >&2
+    elif [[ -f $SETTINGS ]] && grep -qE 'tips (prompt-)?hook' "$SETTINGS"; then
+      echo "warning: python3 not found; remove the \`tips hook\` and \`tips prompt-hook\` entries from $SETTINGS by hand" >&2
     fi
     return 0
   fi
-  python3 - "$SETTINGS" "$1" "$HOOK_CMD" <<'PY' || echo "warning: $SETTINGS was not changed" >&2
+  python3 - "$SETTINGS" "$1" "$HOOK_CMD" "$PROMPT_CMD" <<'PY' || echo "warning: $SETTINGS was not changed" >&2
 import json, os, sys
-path, action, cmd = sys.argv[1:4]
-EVENT = "PostToolUseFailure"
+path, action, cmd, prompt_cmd = sys.argv[1:5]
+# event: (subcommand that marks our entry, the entry to add)
+OURS = {
+    "PostToolUseFailure": ("tips hook", {"matcher": "Bash", "hooks": [{"type": "command", "command": cmd, "timeout": 5}]}),
+    "UserPromptSubmit": ("tips prompt-hook", {"hooks": [{"type": "command", "command": prompt_cmd, "timeout": 5}]}),
+}
 try:
     with open(path) as f:
         text = f.read()
@@ -159,34 +168,35 @@ except ValueError as e:
 if not isinstance(data, dict):
     sys.exit("error: %s is not a JSON object" % path)
 
-def ours(h):
+def ours(h, sub):
     c = h.get("command", "") if isinstance(h, dict) else ""
-    return "handoff.sh" in c and "tips hook" in c
+    return "handoff.sh" in c and c.rstrip().endswith(sub)
 
 if not isinstance(data.get("hooks", {}), dict):
     sys.exit("error: \"hooks\" in %s is not a JSON object" % path)
 before = json.dumps(data)
 
 hooks = data.get("hooks", {})
-groups = hooks.get(EVENT) if isinstance(hooks.get(EVENT), list) else []
-kept = []
-for g in groups:
-    if isinstance(g, dict) and isinstance(g.get("hooks"), list):
-        g = dict(g, hooks=[h for h in g["hooks"] if not ours(h)])
-        if not g["hooks"]:
-            continue
-    kept.append(g)
-if action == "add":
-    kept.append({"matcher": "Bash", "hooks": [{"type": "command", "command": cmd, "timeout": 5}]})
-if kept:
-    hooks[EVENT] = kept
-else:
-    hooks.pop(EVENT, None)
+for event, (sub, entry) in OURS.items():
+    groups = hooks.get(event) if isinstance(hooks.get(event), list) else []
+    kept = []
+    for g in groups:
+        if isinstance(g, dict) and isinstance(g.get("hooks"), list):
+            g = dict(g, hooks=[h for h in g["hooks"] if not ours(h, sub)])
+            if not g["hooks"]:
+                continue
+        kept.append(g)
+    if action == "add":
+        kept.append(entry)
+    if kept:
+        hooks[event] = kept
+    else:
+        hooks.pop(event, None)
 if hooks:
     data["hooks"] = hooks
 else:
     data.pop("hooks", None)
-# Rewrite (and reformat) the file only when the hook really changed.
+# Rewrite (and reformat) the file only when the hooks really changed.
 if json.dumps(data) == before and text:
     sys.exit(0)
 out = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
@@ -195,7 +205,7 @@ tmp = path + ".tmp"
 with open(tmp, "w") as f:
     f.write(out)
 os.replace(tmp, path)
-print("%s the tips hook in %s" % ("added" if action == "add" else "removed", path))
+print("%s the tips hooks in %s" % ("added" if action == "add" else "removed", path))
 PY
 }
 
@@ -244,7 +254,7 @@ fi
 [[ -f $SRC/handoff/handoff.sh ]] || { echo "error: run from a clone of the repository" >&2; exit 1; }
 if [[ -t 0 ]]; then
   [[ -n $dashboard ]] || dashboard=$(ask "Install the \`$DASH\` web dashboard?" y)
-  [[ -n $tips ]] || tips=$(ask "Install tips (/tips skill, a block in $MD, a hook in $SETTINGS)?" y)
+  [[ -n $tips ]] || tips=$(ask "Install tips (/tips skill, a block in $MD, hooks in $SETTINGS)?" y)
 else
   # Before install.conf existed, the dashboard was always installed.
   [[ -n $dashboard ]] || dashboard=$(prev dashboard)
