@@ -37,8 +37,8 @@ machines, or to park a task and come back to it days later.
   browser, with a one-click resume command.
 - **No secrets.** The skill is told never to write tokens or credentials,
   only where they live.
-- **Small and dependency-free.** One Bash script: bash 3.2+ and git. Works
-  on Linux, macOS and Termux (Android). The optional dashboard needs only
+- **Small and dependency-free.** Two Bash scripts (`handoff.sh`,
+  `tips.sh`): bash 3.2+ and git. Works on Linux, macOS and Termux (Android). The optional dashboard needs only
   python3.
 
 ## Installation

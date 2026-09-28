@@ -22,6 +22,11 @@ All notable changes to this project are documented here. The format follows
 - The tips log (`_tips/log.jsonl`) keeps found ids instead of the search text,
   so nothing needs masking (`tips_redact` is gone), and rotates to
   `log.1.jsonl` past 256 KB (`TIPS_LOG_MAX`).
+- `/pickup` shows the age of an older handoff in days (`age: 30d`, not `720h`).
+
+### Fixed
+
+- The prompt hook removes its week-old per-session seen-files from `$TMPDIR`.
 
 ## [1.3.0] - 2026-09-28
 

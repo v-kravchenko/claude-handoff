@@ -176,8 +176,11 @@ cmd_stale() (
   echo "## staleness"
   echo "created: ${created:-unknown}"
   if [[ -n $created ]]; then
-    local saved
-    saved=$(epoch "$created") && echo "age: $((($(date +%s) - saved) / 3600))h"
+    local saved h
+    if saved=$(epoch "$created"); then
+      h=$((($(date +%s) - saved) / 3600))
+      if ((h < 48)); then echo "age: ${h}h"; else echo "age: $((h / 24))d"; fi
+    fi
   fi
   if [[ -n $dir ]]; then
     cd "$dir" 2>/dev/null || { echo "WARNING: work dir $dir no longer exists"; exit; }

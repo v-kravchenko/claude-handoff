@@ -159,7 +159,10 @@ has "no longer exists" "missing work dir is reported"
 # --- age -----------------------------------------------------------------
 sed -i.bak "s/^created: .*/created: 2000-01-01 00:00:00 +0000/" "$F2" && rm -f "$F2.bak"
 run "$P" show @alpha
-if grep -qE '^age: [0-9]{5,}h' <<<"$OUT"; then ok; else fail "age is computed from created"; fi
+if grep -qE '^age: [0-9]{4,}d$' <<<"$OUT"; then ok; else fail "age is computed from created"; fi
+sed -i.bak "s/^created: .*/created: $(date '+%Y-%m-%d %H:%M:%S %z')/" "$F2" && rm -f "$F2.bak"
+run "$P" show @alpha
+has "age: 0h" "a fresh handoff's age is in hours"
 
 # --- plain directory staleness -------------------------------------------
 cd "$P" || exit 1
@@ -427,6 +430,10 @@ ph '{"session_id":"p1","prompt":"і ще раз реліз"}'
 assert "prompt hook shows a tip once per session" [ -z "$OUT" ]
 ph '{"session_id":"p2","prompt":"Як ми релізимо?"}'
 has "rel (project)" "prompt hook shows the tip again in another session"
+touch -t 202001010000 "$TMP/ph/claude-handoff-tips/p1"
+ph '{"session_id":"p2","prompt":"Як ми релізимо?"}'
+assert "prompt hook removes week-old seen-files" [ ! -e "$TMP/ph/claude-handoff-tips/p1" ]
+assert "prompt hook keeps fresh seen-files" [ -e "$TMP/ph/claude-handoff-tips/p2" ]
 ph '{"session_id":"p3","prompt":"перереліз"}'
 assert "prompt hook needs a word start" [ -z "$OUT" ]
 ph '{"session_id":"p3","prompt":"fix the tag"}'

@@ -371,6 +371,8 @@ tips_prompt_hook() {
   sid=$(sed -nE 's/.*"session_id":[[:space:]]*"([A-Za-z0-9_-]{1,100})".*/\1/p' <<<"$in")
   if [[ -n $sid ]]; then
     f="${TMPDIR:-/tmp}/claude-handoff-tips/$sid"
+    # Seen-files of old sessions ($TMPDIR is not cleared on Termux/macOS).
+    find "${f%/*}" -type f -mtime +7 -delete 2>/dev/null
     [[ -f $f ]] && seen=$(<"$f")
   fi
   tips_init
