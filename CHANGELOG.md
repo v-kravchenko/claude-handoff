@@ -18,9 +18,9 @@ All notable changes to this project are documented here. The format follows
   tabs; a task or tip opens in a side panel (Esc closes it) instead of
   expanding in place; global tips are cards; a freshness dot per task;
   project sections no longer collapse. Compact rows (title, `@task`,
-  age, Copy and a chevron; no Details button), the search in the header,
-  neutral section headings,
-  bold tip labels.
+  age, Copy and an arrow; no Details button), the search in the header,
+  neutral section headings, bold tip labels, one button style in the
+  panel, an inline favicon (no CSP error in the console).
 
 ### Added
 
