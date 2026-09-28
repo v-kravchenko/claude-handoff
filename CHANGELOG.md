@@ -6,6 +6,43 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-09-28
+
+### Added
+
+- One-line install: `curl -fsSL .../install.sh | bash` fetches the
+  repository into a temp dir (git, or a tarball without git), runs its
+  `install.sh` and deletes the copy; `| bash -s -- FLAGS` passes flags,
+  `HANDOFF_REF` picks a branch or tag, `--uninstall` needs no copy. The
+  README recommends it over the plugin.
+
+### Changed
+
+- `install.sh` questions default to the previous answers.
+- `/pickup` and `/handoff @task` no longer print a raw `mv` command to
+  restore an archived task; they point to `/pickup @task` and its Restore
+  option.
+- `handoff.sh` computes the project key once per run: listing 30 tasks
+  takes 2 git calls instead of 122, so `/pickup` and `/handoff` start faster.
+
+### Fixed
+
+- Project keys are one-to-one: `/a~b` and `/a/b`, or `~/x` and `/home/x`,
+  no longer share handoffs and tips. Paths outside `$HOME` now start with
+  `root~` (`/srv/app` -> `root~srv~app`), and `~` and `%` in names are
+  escaped; handoffs saved for such paths are not found under the new key
+  (move the directory by hand to keep them).
+- Tips search and hooks match Cyrillic the same way with any awk and
+  locale: mawk (Debian, Ubuntu) and macOS awk without a UTF-8 locale did
+  not lowercase `Реліз`, matched `реліз` inside `перереліз` and counted
+  bytes as characters; macOS awk could abort on UTF-8 text.
+- Tips without a `status:` line count as active (as in the dashboard), and
+  tips with CRLF line ends are found and can be marked.
+- An interrupted `install.sh` no longer leaves the skills (and
+  `install.conf`) deleted: each skill is copied first, then swapped in.
+- `tests/test.sh` no longer hangs on the install questions when run from a
+  terminal.
+
 ## [1.2.1] - 2026-09-27
 
 ### Added
@@ -151,6 +188,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.2.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/v-kravchenko/claude-handoff/compare/v1.1.3...v1.2.0
 [1.1.3]: https://github.com/v-kravchenko/claude-handoff/compare/v1.1.2...v1.1.3
