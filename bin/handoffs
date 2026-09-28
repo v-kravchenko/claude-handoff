@@ -138,9 +138,11 @@ def read_task(task_dir, task, status):
     steps = list_items(section(body, "next steps"))
     project = fields.get("project", "")
     none = lambda v: "" if v in (None, "none") else v  # noqa: E731
+    parent = fields.get("from", "")
     return {
         "task": task,
         "status": status,
+        "from": parent if TASK_RE.fullmatch(parent) and parent != ARCHIVE else "",
         "title": fields.get("title") or task,
         "project": project,
         "project_exists": bool(project) and os.path.isdir(project),
@@ -278,8 +280,8 @@ TASK_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
 
 def rename_task(root, slug, status, task, new):
     """Rename a task (active or archived) in place and update the `task:` field
-    of its handoffs. Refuses names taken by an active or archived task.
-    Returns an error message or None."""
+    of its handoffs and the `from:` field of its forks. Refuses names taken by
+    an active or archived task. Returns an error message or None."""
     src = task_dir(root, slug, status, task)
     if not src:
         return "no such task"
@@ -296,14 +298,18 @@ def rename_task(root, slug, status, task, new):
     except OSError as e:
         return str(e)
     for name in versions(dst):
-        set_task_field(os.path.join(dst, name), new)
+        set_field(os.path.join(dst, name), "task", new)
+    for d in (base, os.path.join(base, ARCHIVE)):
+        for child in subdirs(d):
+            for name in versions(os.path.join(d, child)) if child != ARCHIVE else []:
+                set_field(os.path.join(d, child, name), "from", new, old=task)
     return None
 
 
-def set_task_field(path, new):
-    """Rewrite the frontmatter `task:` line of a handoff, keeping everything
-    else byte for byte (line endings, mtime). Best effort: the directory name
-    is what counts."""
+def set_field(path, key, new, old=None):
+    """Rewrite a frontmatter line (`task:`, `from:`) of a handoff, only if its
+    value is `old` when given, keeping everything else byte for byte (line
+    endings, mtime). Best effort: the directory name is what counts."""
     try:
         with open(path, "rb") as fh:
             lines = fh.read().splitlines(keepends=True)
@@ -311,10 +317,13 @@ def set_task_field(path, new):
             return
         for i in range(1, len(lines)):
             if lines[i].strip() == b"---":
-                return  # no `task:` field
-            if lines[i].startswith(b"task: "):
+                return  # no such field
+            prefix = key.encode() + b": "
+            if lines[i].startswith(prefix):
                 body = lines[i].rstrip(b"\r\n")
-                lines[i] = b"task: " + new.encode() + lines[i][len(body):]
+                if old is not None and body[len(prefix):] != old.encode():
+                    return
+                lines[i] = prefix + new.encode() + lines[i][len(body):]
                 break
         else:
             return  # unterminated frontmatter
@@ -929,7 +938,9 @@ PAGE = r"""<!doctype html>
 [hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-main { max-width: 1240px; margin: 0 auto; padding: 18px; }
+/* Column filling the viewport: the footer sits at the bottom even when the list is short. */
+main { max-width: 1240px; margin: 0 auto; padding: 18px; min-height: 100vh;
+  display: flex; flex-direction: column; }
 /* Project tiles in a responsive grid; a tile with an open item takes the row. */
 #list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
   gap: 16px; }
@@ -988,6 +999,29 @@ h2 .ppath { color: var(--muted); font-weight: 400; font-size: 12px; overflow: hi
 .item:hover { background: hsl(var(--h) 60% 50% / .06); }
 .item.open { background: hsl(var(--h) 60% 50% / .10); box-shadow: inset 3px 0 hsl(var(--h) 65% 55%); }
 .item.dim { opacity: .6; }
+/* Task trees: a task and its forks form one block (no separators inside).
+   Each fork hangs off its parent's dot by a rounded elbow; a vertical run goes
+   on past forks that have a next sibling. --px is the parent dot's centre. */
+.node { position: relative; --tree: color-mix(in srgb, var(--muted) 45%, transparent); --px: calc(18px + (var(--depth) - 1) * 20px); }
+.items > .node + .node { border-top: 1px solid var(--line); }
+.node > .item { border-top: 0; }
+.node.fork > .item { padding: 5px 14px 5px calc(14px + var(--depth) * 20px); }
+.node.fork > .item .title { font-size: 14px; font-weight: 500; }
+.node.fork > .item .nicon { margin-top: 2px; }
+.node.fork::before { content: ""; position: absolute; left: calc(var(--px) - 1px); top: 0; height: 15px;
+  width: calc(var(--depth) * 20px + 14px - var(--px) - 7px);
+  border: solid var(--tree); border-width: 0 0 1.5px 1.5px; border-bottom-left-radius: 7px; pointer-events: none; }
+.node.fork:not(:last-child)::after { content: ""; position: absolute; left: calc(var(--px) - 1px); top: 0; bottom: 0;
+  border-left: 1.5px solid var(--tree); pointer-events: none; }
+.node.parent > .item { position: relative; }
+.node.parent > .item::after { content: ""; position: absolute; bottom: 0; pointer-events: none;
+  left: calc(var(--px) + 19px); top: 32px; border-left: 1.5px solid var(--tree); }
+.node.fork.parent > .item::after { top: 25px; }
+.node.done > .item { opacity: .6; }
+.node.done > .item .title { color: var(--muted); }
+.node.fork > .item .side .copy, .node.fork > .item .arrow { opacity: 0; }
+.node.fork > .item:hover .side .copy, .node.fork > .item:focus-within .side .copy,
+.node.fork > .item:hover .arrow, .node.fork > .item:focus-within .arrow { opacity: 1; }
 .head:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
 .arrow { display: inline-flex; color: var(--muted); padding: 0 4px; }
 .arrow svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -1032,9 +1066,11 @@ body.noscroll { overflow: hidden; }
 @keyframes slide { from { transform: translateX(32px); opacity: 0; } }
 @keyframes fade { from { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { #panel, #scrim { animation: none; } }
-.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; margin-top: 8px; background: var(--muted); opacity: .45; }
-.dot.new { background: var(--ok); opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
-.dot.recent { background: var(--arch); opacity: 1; }
+/* Node icon: open or done (GitHub-style); centred on x = 18px like the tree lines. */
+.nicon { flex: none; display: flex; width: 16px; height: 16px; margin: 4px -4px 0; color: var(--muted); }
+.nicon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.nicon.open { color: hsl(var(--h) 55% 45%); }
+.nicon.done { color: var(--ok); }
 .tipmeta { color: var(--muted); font-size: 13px; margin: 2px 0; }
 /* Card head: title and a "@task · chips" line; age, copy and chevron on the right. */
 .head { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
@@ -1057,6 +1093,8 @@ body.noscroll { overflow: hidden; }
 .chip.used { color: var(--ok); background: var(--addbg); }
 .chip.warn, .chip.archived { color: var(--arch); background: var(--archbg); }
 .chip.missing { color: var(--warn); background: transparent; box-shadow: inset 0 0 0 1px var(--warn); }
+.chip.link { cursor: pointer; }
+.chip.link:hover, .chip.link:focus-visible { color: var(--fg); }
 /* Git context as breadcrumb segments: branch > commit. */
 .crumbs { display: flex; max-width: 100%; font-size: 13px; line-height: 26px; margin: 0 0 10px; }
 .crumb { display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding: 0 14px 0 18px; margin-left: -6px;
@@ -1112,7 +1150,12 @@ pre.diff .hunk { color: var(--accent); }
 .empty, .error { padding: 24px; text-align: center; color: var(--muted); }
 .empty button { margin-top: 10px; }
 .error { color: var(--warn); }
-footer { margin-top: 20px; font-size: 13px; }
+#list { margin-bottom: 24px; }
+footer { margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted);
+  font-size: 12px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+footer .ver { color: var(--fg); }
+footer a { color: inherit; text-decoration: none; }
+footer a:hover { color: var(--accent); text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -1129,7 +1172,10 @@ footer { margin-top: 20px; font-size: 13px; }
   </header>
   <div id="error" class="error" hidden></div>
   <div id="list"></div>
-  <footer class="meta" id="root"></footer>
+  <footer>
+    <span><span class="ver" id="ver"></span> · <span class="mono" id="root"></span></span>
+    <span><a href="https://github.com/v-kravchenko/claude-handoff">GitHub</a> · <a href="https://github.com/v-kravchenko/claude-handoff/blob/main/CHANGELOG.md">Changelog</a></span>
+  </footer>
 </main>
 <div id="scrim" hidden></div>
 <aside id="panel" hidden role="dialog" aria-modal="true" aria-label="Details">
@@ -1336,6 +1382,8 @@ const ICONS = {
   down: ["m6 9 6 6 6-6"],
   right: ["m9 18 6-6-6-6"],
   branch: ["M15 6a9 9 0 0 0-9 9V3", "M15.0 6a3 3 0 1 0 6.0 0a3 3 0 1 0 -6.0 0", "M3.0 18a3 3 0 1 0 6.0 0a3 3 0 1 0 -6.0 0"],
+  copen: ["M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0", "M11 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"],
+  cdone: ["M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0", "m9 12 2 2 4-4"],
   commit: ["M9.0 12a3 3 0 1 0 6.0 0a3 3 0 1 0 -6.0 0", "M3 12L9 12", "M15 12L21 12"],
   close: ["M18 6 6 18", "m6 6 12 12"],
   up: ["m18 15-6-6-6 6"],
@@ -1373,11 +1421,6 @@ function chip(text, cls, title) {
   return c;
 }
 
-// Freshness of a handoff: new (< 1 day), recent (< IDLE_DAYS), old.
-function fresh(iso) {
-  const d = (Date.now() - Date.parse(iso)) / DAY;
-  return d < 1 ? "new" : d < IDLE_DAYS ? "recent" : "old";
-}
 const base = (p) => p.replace(/\/+$/, "").split("/").pop();
 const DAY = 86400000;
 
@@ -1510,13 +1553,48 @@ function details(t, box, actions) {
   return showFile("");
 }
 
-function chips(t) {
+// full: the panel lists each fork; a card only counts them. shown: tasks in
+// the card's tree, whose links the indentation already shows.
+function chips(t, full, shown) {
   const box = el("div", "chips");
-  if (t.status === "archived") box.appendChild(chip("archived", "archived"));
+  shown = shown || new Set();
+  // A done fork under its parent shows a check instead.
+  if (t.status === "archived" && !(t.from && shown.has(t.from))) box.appendChild(chip("archived", "archived"));
+  forkChips(t, box, full, shown);
   if (!t.project_exists) box.appendChild(chip("path missing", "missing", t.project));
   const idle = Math.floor((Date.now() - Date.parse(t.created)) / DAY);
   if (t.status === "active" && idle >= IDLE_DAYS) box.appendChild(chip("idle " + idle + "d", "warn", "not updated for " + idle + " days"));
   return box;
+}
+
+// Fork links within a project: "↑ @parent" and the forks ("↓ @fork" or "↓ n forks").
+const statusText = (x) => x ? (x.status === "active" ? "active" : "done") : "missing";
+function forkChips(t, box, full, shown) {
+  const same = data.tasks.filter((x) => x.slug === t.slug);
+  if (t.from && !shown.has(t.from)) {
+    const p = same.find((x) => x.task === t.from);
+    box.appendChild(taskLink(chip("↑ @" + t.from, p ? "link" : "missing", "fork of @" + t.from + " (" + statusText(p) + ")"), p));
+  }
+  const kids = same.filter((x) => x.from === t.task && !shown.has(x.task));
+  if (full) kids.forEach((k) => box.appendChild(taskLink(chip("↓ @" + k.task, "link", "fork: " + k.title + " (" + statusText(k) + ")"), k)));
+  else if (kids.length) {
+    box.appendChild(taskLink(chip("↓ " + (kids.length === 1 ? "@" + kids[0].task : kids.length + " forks"), kids.length === 1 ? "link" : "",
+      "forks: " + kids.map((k) => "@" + k.task + " (" + statusText(k) + ")").join(", ")), kids.length === 1 ? kids[0] : null));
+  }
+}
+// Makes a chip open task x (a click or Enter), unfolding the archive if needed.
+function taskLink(c, x) {
+  if (!x) return c;
+  c.tabIndex = 0;
+  c.setAttribute("role", "button");
+  const go = (e) => { e.stopPropagation(); e.preventDefault(); openTask(x); };
+  c.addEventListener("click", go);
+  c.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") go(e); });
+  return c;
+}
+function openTask(t) {
+  if (t.status === "archived" && !state.archOpen.includes(t.project)) { state.archOpen.push(t.project); render(); }
+  openPanel("t:" + keyOf(t), hue(projectName(t.project)), projectWho(t.project), (body) => taskPanel(t, body));
 }
 
 // Git context as breadcrumb segments: branch > commit (null without git info).
@@ -1538,7 +1616,12 @@ function gitCrumbs(t) {
 // Card head: title, then "@name · chips"; age and buttons on the right.
 function cardHead(title, name, cs, when, whenTitle, buttons, dot) {
   const head = el("div", "head");
-  if (dot) { const d = el("span", "dot " + dot); d.title = { new: "saved today", recent: "saved in the last 2 weeks", old: "older or archived" }[dot]; head.appendChild(d); }
+  if (dot) {  // the task's state: open, or done (a fork archived under its parent)
+    const d = el("span", "nicon " + dot);
+    d.title = dot === "done" ? "done (archived)" : "open";
+    d.appendChild(icon(dot === "done" ? "cdone" : "copen"));
+    head.appendChild(d);
+  }
   const main = el("div", "hmain");
   main.appendChild(rich("div", "title", title || name));
   const sl = el("div", "sline");
@@ -1632,22 +1715,52 @@ function panelHead(body, title, name, cs, when, whenTitle) {
   body.appendChild(sl);
 }
 
-function card(t) {
+// Tasks as a forest of nodes: a task, then its forks (newest subtree first).
+// A fork whose parent is not in the list (other section, filtered out) is a root.
+function forest(tasks) {
+  const names = new Set(tasks.map((t) => t.task)), kids = {}, done = new Set();
+  const isRoot = (t) => !t.from || !names.has(t.from) || t.from === t.task;
+  tasks.forEach((t) => { if (!isRoot(t)) (kids[t.from] = kids[t.from] || []).push(t); });
+  const build = (t) => {
+    done.add(t.task);
+    const sub = (kids[t.task] || []).filter((k) => !done.has(k.task)).map(build);
+    return { t, kids: sub, last: sub.reduce((m, k) => (k.last > m ? k.last : m), t.saved) };
+  };
+  const order = (list) => { list.sort((a, b) => (b.last > a.last ? 1 : -1)); list.forEach((n) => order(n.kids)); return list; };
+  const roots = tasks.filter(isRoot).map(build);
+  tasks.forEach((t) => { if (!done.has(t.task)) roots.push(build(t)); });  // cycles: no root leads there
+  return order(roots);
+}
+// marks: dim archived forks with a check (under an active task, not in Archived).
+function cards(tasks, marks) {
+  const shown = new Set(tasks.map((t) => t.task));
+  const node = (n, depth) => {
+    const w = el("div", "node" + (depth ? " fork" : "") + (n.kids.length ? " parent" : "") +
+      (marks && depth && n.t.status === "archived" ? " done" : ""));
+    w.style.setProperty("--depth", depth);
+    w.appendChild(card(n.t, marks && depth, shown));
+    n.kids.forEach((k) => w.appendChild(node(k, depth + 1)));
+    return w;
+  };
+  return forest(tasks).map((n) => node(n, 0));
+}
+
+function card(t, depth, shown) {
   const c = el("div", "item");
   c.dataset.key = "t:" + keyOf(t);
   const [copyBtn, code] = copyButton(LABEL, command(t));
-  const [head, main] = cardHead(t.title === t.task ? "" : t.title, "@" + t.task, chips(t),
-    t.created, t.created, [copyBtn, arrow()], t.status === "active" ? fresh(t.created) : "old");
+  const [head, main] = cardHead(t.title === t.task ? "" : t.title, "@" + t.task, chips(t, false, shown),
+    t.created, t.created, [copyBtn, arrow()], depth && t.status === "archived" ? "done" : "open");
   const snippet = hits.get(keyOf(t));
   if (snippet) main.appendChild(hl(el("div", "snippet"), snippet));
   c.appendChild(head);
   c.appendChild(code);
-  opener(c, head, () => openPanel(c.dataset.key, hue(projectName(t.project)), projectWho(t.project), (body) => taskPanel(t, body)));
+  opener(c, head, () => openTask(t));
   return c;
 }
 
 function taskPanel(t, body) {
-  panelHead(body, t.title === t.task ? "" : t.title, "@" + t.task, chips(t), t.created, t.created);
+  panelHead(body, t.title === t.task ? "" : t.title, "@" + t.task, chips(t, true), t.created, t.created);
   // Copy resume, Rename and Done/Restore sit next to the tabs.
   const [copyBtn, code] = copyButton("Copy resume", command(t));
   copyBtn.classList.replace("ghost", "primary");
@@ -1780,7 +1893,8 @@ function render() {
   const tipMatches = (t) => !q ||
     [t.id, t.title, t.when, t.keywords, t.body].some((f) => f && f.toLowerCase().includes(q));
   const tipsOf = (slug) => tips.filter((t) => t.slug === slug && tipMatches(t));
-  $("#root").textContent = "Root: " + tilde(data.root) + " · handoffs " + data.version;
+  $("#ver").textContent = "handoffs " + data.version;
+  $("#root").textContent = tilde(data.root);
 
   const list = $("#list");
   list.textContent = "";
@@ -1810,7 +1924,15 @@ function render() {
     if (!shownAny) list.appendChild(phead);
     shownAny = true;
     const act = tasks.filter((t) => t.status === "active");
-    const arch = tasks.filter((t) => t.status === "archived");
+    // Done forks stay under their active parent (at any depth); the rest go to Archived.
+    const tree = act.slice(), inTree = new Set(act.map((t) => t.task));
+    for (let grew = true; grew;) {
+      grew = false;
+      tasks.forEach((t) => {
+        if (t.status === "archived" && t.from && inTree.has(t.from) && !inTree.has(t.task)) { tree.push(t); inTree.add(t.task); grew = true; }
+      });
+    }
+    const arch = tasks.filter((t) => t.status === "archived" && !tree.includes(t));
     const name = projectName(project), h = hue(name), parent = parentOf(project);
 
     const sec = el("section", "project");
@@ -1849,7 +1971,7 @@ function render() {
     if (tab === "tips") {
       sec.appendChild(items(tipsList(ptips, projectWho(project), h)));
     } else {
-      if (act.length) sec.appendChild(items(act.map(card)));
+      if (act.length) sec.appendChild(items(cards(tree, true)));
       else sec.appendChild(el("div", "none", "No active tasks."));
       if (arch.length) {
         const open = !!q || state.archOpen.includes(project);
@@ -1861,7 +1983,7 @@ function render() {
           render();
         });
         sec.appendChild(tog);
-        if (open) sec.appendChild(items(arch.map(card)));
+        if (open) sec.appendChild(items(cards(arch)));
       }
     }
     list.appendChild(sec);

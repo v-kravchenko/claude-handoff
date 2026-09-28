@@ -18,6 +18,9 @@ machines, or to park a task and come back to it days later.
 - **Several tasks per directory.** Each handoff belongs to a named task
   (`@api-refactor`, `@flaky-tests`), so one project, or a non-git directory
   like `~`, can hold independent streams of work.
+- **Forks.** `/handoff fork` splits a subtask off the task you resumed
+  (a design bug found mid-migration), saves both, and `/pickup` of the
+  parent later shows what the finished fork found.
 - **Written for the next agent, not as a log.** A fixed template records
   intent, decisions, dead ends and concrete next steps, not a play-by-play.
 - **Staleness report.** `/pickup` shows the handoff's age, the commits made
@@ -120,7 +123,8 @@ and `/handoff:pickup` instead.
 | `/handoff` | Save a handoff. The task is the one you resumed with `/pickup`, an existing task that matches this work, or a new slug derived from the title. |
 | `/handoff @task` | Save under an explicit task name (lowercase `a-z0-9._-`). |
 | `/handoff @task focus on the migration` | Anything after the task is a focus hint for the summary. |
-| `/handoff @task done` | Archive a finished task. |
+| `/handoff @task done` | Archive a finished task; in a session resumed with `/pickup @task`, save a final handoff first. |
+| `/handoff fork [@task] what to split off` | In a session resumed with `/pickup @parent`: save the parent (waiting for the fork) and a new fork task with `from: parent`. |
 | `/pickup` | Resume the only task, or list the tasks to choose from. |
 | `/pickup @task` | Resume a specific task. |
 | `/pickup path/to/file.md` | Resume from a specific handoff file (the path must contain `/` or end in `.md`). |
@@ -143,6 +147,28 @@ Session middleware migrated; token refresh still failing in tests/auth.spec.ts.
 - Staleness: 2 commits since handoff, 1 dirty file
 Proposed first step: fix the clock skew in refreshToken(). Proceed?
 ```
+
+A fork, when a side problem shows up:
+
+```text
+> /pickup @auth-rewrite
+...
+> /handoff fork the login button is misaligned on mobile
+@auth-rewrite  (waits for @login-button)
+@login-button  fork of @auth-rewrite
+> /clear
+> /pickup @login-button
+...fix it...
+> /handoff @login-button done
+> /clear
+> /pickup @auth-rewrite
+fork: @login-button | Login button | done 2026-09-28 | Fixed flex wrap in LoginForm.tsx
+Proposed first step: take @login-button's result into account, then ...
+```
+
+`/pickup` shows `fork of @parent (status)` for a fork and a `## forks` list
+for a parent (active and archived forks, with the first line of their State).
+Links stay within one project; a task has at most one parent.
 
 `/pickup` never starts working on its own; it waits for you to confirm.
 
@@ -205,9 +231,12 @@ handoffs: http://127.0.0.1:8765/  (root: ~/.claude/handoffs; Ctrl+C to stop)
 
 Each project (the directory the handoffs belong to) is a tile in a grid,
 with a coloured accent and initials; it lists its active tasks and folds
-its archived ones under *Archived (N)*. Each task shows a freshness dot (today, last 2 weeks, older), the
-title, the task, its age, and chips only when something needs attention
-(archived, idle for 14+ days, a missing project directory). A tap on a
+its archived ones under *Archived (N)*. Each task shows its title, the
+task, its age, and chips only when something needs attention (archived,
+idle for 14+ days, a missing project directory). Forks hang under their
+parent task as a tree: open tasks have a ◉; done forks stay under an active
+parent, dimmed, with a ✓. `↑ @parent` / `↓ @fork` chips link tasks across
+active and archived. A tap on a
 task or tip opens it in a side panel; `Esc` or a tap outside closes it.
 `/` focuses the search, `Esc` clears it.
 
@@ -221,7 +250,8 @@ task or tip opens it in a side panel; `Esc` or a tap outside closes it.
   `/pickup`.
 - **Rename** (in the panel) gives a task a new name (lowercase
   `a-z0-9._-`, not taken by another active or archived task of the
-  project) and updates the `task:` field of its handoffs.
+  project) and updates the `task:` field of its handoffs and the `from:`
+  field of its forks.
 
 Tips (see [Tips](#tips)) sit on the *Tips* tab of their project's tile;
 global tips are cards under *Global tips* at the bottom. Refuted and superseded
@@ -287,7 +317,7 @@ Handoffs are plain Markdown files stored outside your repositories:
   Inside git it is the main repository root, so all worktrees map to the
   same place.
 - Each file starts with YAML frontmatter (`project`, `dir`, `repo`, `branch`,
-  `commit`, `created`, `task`, `session`, `title`), followed by
+  `commit`, `created`, `task`, `from` for a fork, `session`, `title`), followed by
   the sections *Goal, State, Decisions, Key context, Gotchas, User
   preferences, Next steps, Verify*.
 - The model writes the summary; `skills/handoff/handoff.sh` handles storage,

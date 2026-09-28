@@ -73,14 +73,42 @@ epoch() {
   date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d %H:%M:%S %z' "$1" +%s 2>/dev/null
 }
 
-# Task names, most recently saved first.
+# Task names, most recently saved first; `task_names _archive` lists archived ones.
 task_names() {
-  local d f
-  for d in "$(key)"/*/; do
+  local d f pre=${1:+$1/}
+  for d in "$(key)/$pre"*/; do
     [[ -d $d ]] || continue
-    d=$(basename "$d"); [[ $d == "$ARCHIVE" ]] && continue
-    f=$(latest "$d"); [[ -n $f ]] && echo "$(basename "$f") $d"
+    d=$(basename "$d"); valid_task "$d" || continue
+    f=$(latest "$pre$d"); [[ -n $f ]] && echo "$(basename "$f") $d"
   done | sort -r | cut -d' ' -f2
+}
+
+# First line of a handoff's ## State section, without a list marker.
+state_line() {
+  awk '/^## /{on=($0=="## State"); next} on && NF {sub(/^[-*] +/, ""); print; exit}' "$1" | tr -d '\r'
+}
+
+# Status of a task: active, done YYYY-MM-DD (archived) or missing.
+task_status() {
+  local f
+  if [[ -n $(latest "$1") ]]; then echo active
+  elif f=$(latest "$ARCHIVE/$1"); [[ -n $f ]]; then f=$(basename "$f"); echo "done ${f%_*}"
+  else echo missing
+  fi
+}
+
+# Forks of a task (tasks whose latest handoff has `from: TASK`), active first:
+# @task | title | status | first line of State
+forks() {
+  local t f pre
+  for pre in "" "$ARCHIVE/"; do
+    while read -r t; do
+      [[ -n $t ]] || continue
+      f=$(latest "$pre$t")
+      [[ $(field from "$f") == "$1" ]] || continue
+      printf '@%s | %s | %s | %s\n' "$t" "$(field title "$f")" "$(task_status "$t")" "$(state_line "$f")"
+    done < <(task_names "${pre%/}")
+  done
 }
 
 # @query -> task (exact name). Prints the task or a message.
@@ -119,14 +147,18 @@ cmd_git() {
   git log --oneline -n 10 2>/dev/null || echo "(no commits)"
 }
 
+# tasks [all]: active tasks; with `all`, then archived ones marked `archived`.
 cmd_tasks() {
-  local t f n=0
-  while read -r t; do
-    [[ -n $t ]] || continue
-    f=$(latest "$t"); n=$((n + 1))
-    local ts; ts=$(basename "$f" .md)
-    printf '@%s | %s | %s %s:%s\n' "$t" "$(field title "$f")" "${ts%_*}" "${ts:11:2}" "${ts:13:2}"
-  done < <(task_names)
+  local t f ts pre n=0 dirs=("")
+  [[ ${1:-} == all ]] && dirs+=("$ARCHIVE/")
+  for pre in "${dirs[@]}"; do
+    while read -r t; do
+      [[ -n $t ]] || continue
+      f=$(latest "$pre$t"); n=$((n + 1))
+      ts=$(basename "$f" .md)
+      printf '@%s | %s | %s %s:%s%s\n' "$t" "$(field title "$f")" "${ts%_*}" "${ts:11:2}" "${ts:13:2}" "${pre:+ | archived}"
+    done < <(task_names "${pre%/}")
+  done
   ((n)) || echo "(no tasks)"
 }
 
@@ -221,7 +253,12 @@ cmd_show() {
   if [[ ($arg == */* || $arg == *.md) && -f $arg ]]; then
     f=$arg
   elif [[ -n $arg ]]; then
-    t=$(resolve "${arg%%[[:space:]]*}") || { echo "$t"; echo; echo "## tasks"; cmd_tasks; return; }
+    if ! t=$(resolve "${arg%%[[:space:]]*}"); then
+      echo "$t"
+      # An archived task's last handoff stays readable without a restore.
+      [[ $t == ARCHIVED:* ]] && echo "file: $(latest "$ARCHIVE/${t#ARCHIVED: @}")"
+      echo; echo "## tasks"; cmd_tasks; return
+    fi
     f=$(latest "$t")
     [[ -n $f ]] || { echo "NO TASK: @$t (no handoffs saved)"; return; }
   else
@@ -237,10 +274,19 @@ cmd_show() {
     fi
     f=$(latest "$names")
   fi
+  t=$(basename "$(dirname "$f")")
   echo "file: $f"
-  echo "task: $(basename "$(dirname "$f")")"
+  echo "task: $t"
+  local from list; from=$(field from "$f")
+  valid_task "$from" && echo "fork of: @$from ($(task_status "$from"))"
   echo
   cmd_stale "$f"
+  list=$(forks "$t")
+  if [[ -n $list ]]; then
+    echo
+    echo "## forks"
+    echo "$list"
+  fi
   echo
   echo "## handoff"
   cat "$f"
@@ -266,7 +312,7 @@ esac
 case "$CMD" in
   meta) cmd_meta ;;
   git) cmd_git ;;
-  tasks) cmd_tasks ;;
+  tasks) cmd_tasks all ;;
   new) cmd_new "${3:-}" ;;
   prune) cmd_prune "${3:-}" ;;
   done) cmd_done "${3:-}" ;;

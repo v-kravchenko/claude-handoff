@@ -15,6 +15,9 @@ ${CLAUDE_SKILL_DIR}/../handoff/handoff.sh "${CLAUDE_PROJECT_DIR}" show "$ARGUMEN
 ## Steps
 
 Below, `handoff.sh` means `${CLAUDE_SKILL_DIR}/../handoff/handoff.sh "${CLAUDE_PROJECT_DIR}"`.
+Run each `handoff.sh` command in its own Bash call, exactly as written: no
+`cd`, `;`, `&&`, pipes or other commands around it. Only then it matches
+`allowed-tools` and runs without a permission prompt or an auto mode check.
 
 1. If the output says `NO HANDOFF`: tell the user there is no handoff for this
    project directory. Stop.
@@ -37,9 +40,13 @@ Below, `handoff.sh` means `${CLAUDE_SKILL_DIR}/../handoff/handoff.sh "${CLAUDE_P
    read the relevant diffs/files before trusting the handoff's State and Next
    steps, and point out the conflicts.
 4. Reply briefly:
-   - `@task` and a one-line goal;
+   - `@task` and a one-line goal; for a fork, `fork of @parent (status)`;
+   - forks from the `## forks` list (`@task | title | status | first line
+     of State`), if any;
    - current state (3–5 bullets);
    - staleness warnings, if any;
    - the proposed first step from Next steps (if nothing is left, suggest
-     `/handoff @task done`).
+     `/handoff @task done`). If a fork is `done` and the handoff does not
+     account for its result yet, the first step is to take that result into
+     account: `handoff.sh show @fork` prints its last handoff's `file:`; read it.
 5. Don't start executing until the user confirms.

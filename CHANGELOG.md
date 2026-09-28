@@ -6,17 +6,38 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Task forks: `/handoff fork [@task] <text>` in a session resumed with
+  `/pickup` saves the parent (waiting for the fork) and a new task with
+  `from: <parent>`. `/pickup` shows `fork of @parent (status)` and a
+  `## forks` list with each fork's status and first line of State.
+- Dashboard: forks hang under their parent as a tree, done forks stay there
+  dimmed with a check; `↑ @parent` / `↓ @fork` chips open the linked task.
+  Rename updates `from:` in the forks.
+- `handoff.sh tasks` lists archived tasks too (marked `archived`); `show` of
+  an archived task prints its last handoff's `file:`.
+
 ### Changed
 
+- `/handoff @task done` in a session resumed with `/pickup @task` saves a
+  final handoff before archiving.
+- Dashboard: the node icon shows the task's state (open ◉, done ✓) instead of
+  a freshness dot.
 - `/handoff` writes the handoff in the language of the conversation (headings
   and frontmatter keys stay English), instead of drifting to the template's
   English.
+- Dashboard footer: version and root on the left, GitHub and Changelog links
+  on the right; it sits at the bottom of the window even with a short list.
 
 ### Fixed
 
 - `install.sh --uninstall` / `--no-dashboard` no longer abort where there is
   no systemd or launchd (Termux).
 - `tests/test.sh` no longer restarts and uninstalls the real dashboard service.
+- `/handoff` and `/pickup` run each `handoff.sh` command in its own Bash call,
+  without `cd`, `;`, `&&` or pipes, so it matches `allowed-tools` instead of
+  going to the auto mode classifier (which could fail with "no verdict").
 
 ## [1.3.1] - 2026-09-28
 

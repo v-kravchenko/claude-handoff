@@ -111,12 +111,52 @@ run "$P" "done" beta
 has "archived: @beta"
 run "$P" show @beta
 has "ARCHIVED: @beta" "archived task is reported"
+run "$P" show @beta
+has "file: $HANDOFF_ROOT/" "an archived task's last handoff is readable"
+lacks "@beta |" "menus list only active tasks"
 run "$P" tasks
-lacks "@beta" "archived task is hidden from the list"
+has "@beta | Beta task |" "tasks lists archived tasks too"
+has " | archived" "archived tasks are marked"
+lacks "@alpha | Alpha task v2 | archived" "active tasks are not marked"
 run "$P" "done" beta
 has "NO TASK: @beta"
 run "$P" show
 has "task: alpha" "one task left after archiving"
+
+# --- forks ---------------------------------------------------------------
+# fork PROJECT TASK TITLE PARENT STATE: a handoff with `from:` and a ## State line.
+fork() {
+  local f; f=$(save "$1" "$2" "$3")
+  { sed -n '1,/^---$/{/^---$/!p;}' "$f"; echo "from: $4"; echo "---"; echo "# $3"; echo
+    echo "## State"; echo; echo "- $5"; echo "- more"; echo "## Next steps"; } >"$f.tmp" && mv "$f.tmp" "$f"
+  echo "$f"
+}
+fork "$P" fixbtn "Button fix" alpha "Button padding fixed" >/dev/null
+fork "$P" gamma "Gamma" alpha "Gamma started" >/dev/null
+fork "$P" nested "Nested" fixbtn "Nested fork" >/dev/null
+fork "$P" bogus "Bogus parent" "@x y" "Bad from" >/dev/null
+run "$P" "done" fixbtn
+run "$P" show @alpha
+has "## forks" "a parent lists its forks"
+has "@gamma | Gamma | active | Gamma started"
+has "@fixbtn | Button fix | done $(date +%Y-%m-%d) | Button padding fixed" "an archived fork shows its result"
+lacks "@nested |" "only direct forks are listed"
+lacks "fork of:" "a root task has no parent"
+run "$P" show @gamma
+has "fork of: @alpha (active)"
+lacks "## forks" "no forks section without forks"
+run "$P" show @nested
+has "fork of: @fixbtn (done $(date +%Y-%m-%d))" "the parent may be archived"
+run "$P" show @bogus
+lacks "fork of:" "an invalid from: is ignored"
+mv "$(dirname "$F2")" "$TMP/alpha.bak"
+run "$P" show @gamma
+has "fork of: @alpha (missing)" "a deleted parent is reported"
+mv "$TMP/alpha.bak" "$(dirname "$F2")"
+for t in nested bogus fixbtn gamma; do
+  "$SCRIPT" "$P" "done" "$t" >/dev/null
+  rm -rf "$(dirname "$(dirname "$F2")")/_archive/$t"
+done
 
 # --- git repository ------------------------------------------------------
 G="$TMP/repo"; mkdir -p "$G/sub"; cd "$G" || exit 1
@@ -209,6 +249,9 @@ for f in "$SKILLS"/handoff/SKILL.md "$SKILLS"/pickup/SKILL.md "$SKILLS"/../extra
 done
 assert "pickup: offers a menu via AskUserQuestion" grep -q AskUserQuestion "$SKILLS/pickup/SKILL.md"
 assert "pickup: restores via the script" grep -qF 'handoff.sh restore' "$SKILLS/pickup/SKILL.md"
+assert "handoff: the template has from:" grep -q '^from: <parent' "$SKILLS/handoff/SKILL.md"
+assert "handoff: documents fork" grep -q '^## Forking a task' "$SKILLS/handoff/SKILL.md"
+assert "pickup: shows forks" grep -qF '## forks' "$SKILLS/pickup/SKILL.md"
 
 # --- same-second saves -----------------------------------------------------
 A=$(save "$S" fast "One"); B=$(save "$S" fast "Two")
@@ -549,7 +592,7 @@ Second paragraph is not shown.
 ## Verify
 - nope
 EOF
-  printf -- '---\nproject: /no/such/dir\ntitle: archived one\n---\n## Goal\n%s\n' "$(printf 'word %.0s' {1..80})" \
+  printf -- '---\nproject: /no/such/dir\ntitle: archived one\nfrom: alpha\n---\n## Goal\n%s\n' "$(printf 'word %.0s' {1..80})" \
     >"$D/home~app/_archive/old/2026-09-01_080000.md"
   printf 'no frontmatter here\n' >"$D/other/bare/2026-09-02_090000.md"
   printf -- '---\ntitle: hidden\n---\n' >"$D/.hidden/x/2026-09-03_090000.md"
@@ -581,6 +624,7 @@ EOF
   jcheck 't["alpha"]["project"] == "'"$P"'" and t["alpha"]["project_exists"]' "project path from frontmatter"
   jcheck 't["alpha"]["repo"] == "" and t["alpha"]["branch"] == "" and t["alpha"]["slug"] == "home~app"' "missing repo/branch are empty"
   jcheck 't["old"]["status"] == "archived" and not t["old"]["project_exists"]' "archived task, missing path"
+  jcheck 't["old"]["from"] == "alpha" and t["alpha"]["from"] == ""' "from: is the parent task"
   jcheck 'len(t["old"]["goal"]) <= 201 and t["old"]["goal"].endswith("…")' "long goal is truncated"
   jcheck 't["bare"]["title"] == "bare" and t["bare"]["project"] == "other" and t["bare"]["created"].startswith("2026-09-02T09:00")' "no frontmatter: task name, slug, date from file name"
   jcheck '[x["task"] for x in d["tasks"]] == ["alpha", "bare", "old"]' "newest first"
@@ -607,7 +651,7 @@ EOF
   mkdir -p "$D/gitproj/repo" "$D/gitproj/nest"
   printf -- '---\nproject: %s\nrepo: %s\nbranch: main\ncommit: %s\ntitle: r\n---\n' "$G" "$G" "$GC" \
     >"$D/gitproj/repo/2026-09-04_090000.md"
-  printf -- '---\nproject: %s\nrepo: %s/nested\nbranch: main\ncommit: %s\ntitle: n\n---\n' "$G" "$G" "$GC" \
+  printf -- '---\nproject: %s\nrepo: %s/nested\nbranch: main\ncommit: %s\ntitle: n\nfrom: @Bad\n---\n' "$G" "$G" "$GC" \
     >"$D/gitproj/nest/2026-09-04_090000.md"
   # A worktree: repo is the main checkout, project and dir are the worktree.
   W="$TMP/gitwt"
@@ -619,6 +663,7 @@ EOF
   OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --json 2>&1)
   jcheck 't["repo"]["git"] and t["wt"]["git"] and not t["nest"]["git"] and not t["alpha"]["git"]' \
     "git info only for the project repo or its worktree"
+  jcheck 't["nest"]["from"] == ""' "an invalid from: is dropped"
 
   # HTTP: start on a free port, probe, stop.
   PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
@@ -746,6 +791,7 @@ EOF
   assert "rename leaves no old directory" [ ! -e "$D/home~app/alpha" ]
   assert "rename keeps the archived task archived" [ -d "$D/home~app/_archive/older" ]
   assert "rename updates the task field" grep -qx 'task: beta' "$D/home~app/beta/2026-09-26_173557.md"
+  assert "rename updates from: in its forks" grep -qx 'from: beta' "$D/home~app/_archive/older/2026-09-01_080000.md"
   assert "done/restore round trip keeps both versions" [ "$(find "$D/home~app/beta" -name '*.md' | wc -l | tr -d ' ')" -eq 2 ]
   assert "restore removes the archive entry" [ ! -d "$D/home~app/_archive/alpha" ]
 
