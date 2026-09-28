@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-28
+
 ### Added
 
 - Task forks: `/handoff fork [@task] <text>` in a session resumed with
@@ -271,6 +273,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.4.0]: https://github.com/v-kravchenko/claude-handoff/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/v-kravchenko/claude-handoff/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.2.1...v1.2.2
