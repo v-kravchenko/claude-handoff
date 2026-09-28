@@ -6,6 +6,51 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-29
+
+### Breaking
+
+- Handoffs and tips are stored in `${XDG_DATA_HOME:-~/.local/share}/claude-handoff`
+  (or `HANDOFF_ROOT`), not in `${CLAUDE_CONFIG_DIR:-~/.claude}/handoffs`.
+  Nothing is moved and the old directory is not read. To keep your
+  handoffs, move them by hand:
+  `mkdir -p ~/.local/share && mv ~/.claude/handoffs ~/.local/share/claude-handoff`.
+- A project is the name of the directory the session was opened in
+  (lowercased, `a-z0-9._-`), not its full path: `~/code/app` is `app`, not
+  `home~code~app`. Git worktrees no longer share the main repository's
+  project: each is named after its directory. To keep a project's handoffs,
+  rename its directory in the handoff root, and its tips in `_tips/`:
+  `mv home~code~app app`, `mv _tips/home~code~app _tips/app`. Tip statistics
+  in the dashboard start over for a renamed project.
+
+### Added
+
+- `handoff.sh PROJECT_DIR describe [TEXT]`: a description of the project,
+  stored as `_project.md` and shown by `/pickup`, `/handoff` and the
+  dashboard.
+- `describe --parent`: a directory's project becomes `<parent>~<name>`
+  (`work~api`), so same-named directories can keep separate handoffs;
+  `describe --no-parent` renames it back.
+- The handoff frontmatter has `host:`.
+
+### Changed
+
+- `dir` and `repo` in the frontmatter are relative to the project directory,
+  and `/handoff` writes paths inside the project relative to it. `/pickup`
+  resolves them against the current project directory, so they survive a
+  moved project; an older absolute path under the handoff's `project:` is
+  moved along with it.
+- Dashboard: the tasks of one project are grouped by its name, whatever path
+  they were saved from; the project's path is one that exists here.
+
+### Fixed
+
+- Frontmatter is valid YAML, so Markdown editors that read it (Obsidian)
+  no longer report invalid properties: `/handoff` writes `title` in double
+  quotes, tips have `title` and `when` in double quotes and `keywords` as a
+  `[list]`, and `tips refuted` quotes a reason with `: `. The scripts and the
+  dashboard read quoted values and the older unquoted form alike.
+
 ## [1.4.3] - 2026-09-28
 
 ### Fixed
@@ -299,6 +344,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.5.0]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.3...v1.5.0
 [1.4.3]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.0...v1.4.1

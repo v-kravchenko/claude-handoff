@@ -32,7 +32,7 @@ import time
 import urllib.parse
 import webbrowser
 
-VERSION = "1.4.3"
+VERSION = "1.5.0"
 ARCHIVE = "_archive"
 TIPS = "_tips"  # tips store (skills/handoff/tips.sh), not a project
 DESC = "_project.md"  # a project's description (handoff.sh describe)
