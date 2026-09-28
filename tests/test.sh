@@ -297,6 +297,7 @@ OUT=$("$TOFF/handoff/handoff.sh" "$TP" tips status)
 has "tips: off" "tips are off without the tips skill next to handoff"
 has "project tips: $TROOT/$KEYDIR"
 has "global tips: $TROOT/_global"
+lacks "## Saving tips"
 run "$TP" tips list
 has "(no tips)"
 run "$TP" tips search anything
@@ -399,6 +400,8 @@ assert "hook is silent when tips are off" [ -z "$OUT" ]
 TS="$TMP/tipskills"; mkdir -p "$TS"; cp -R "$SKILLS/handoff" "$SKILLS/../extras/tips" "$TS/"
 OUT=$("$TS/handoff/handoff.sh" "$TP" tips status)
 has "tips: on" "tips are on with the tips skill installed"
+has "## Saving tips" "tips status prints the tip-saving guide when on"
+has "## Tip template"
 OUT=$("$TS/handoff/handoff.sh" "$TP" tips hook <<<"$HOOKIN")
 if python3 -c 'import json,sys; d=json.loads(sys.argv[1])["hookSpecificOutput"]; assert d["hookEventName"]=="PostToolUseFailure"; assert "no-tmp (global)" in d["additionalContext"]' "$OUT" 2>/dev/null
 then ok; else fail "hook prints valid JSON naming the matching tip"; fi

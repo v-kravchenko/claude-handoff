@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `/handoff` loads the tip-saving instructions only with tips on: they moved
+  to `skills/handoff/references/tips.md`, which `tips status` prints; with
+  tips off the skill prompt is a third smaller.
+
 ## [1.2.2] - 2026-09-28
 
 ### Added

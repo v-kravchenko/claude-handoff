@@ -11,6 +11,7 @@ TIPS_ROOT="$ROOT/_tips"
 GLOBAL=_global
 TIPS_MAX=5
 SKILLS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+TIPS_GUIDE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/references/tips.md"
 
 # The project slug costs a few git calls; it is computed once (see key).
 tips_init() { [[ -n ${TIPS_SLUG:-} ]] || { key >/dev/null; TIPS_SLUG=$(basename "$KEY"); }; }
@@ -328,6 +329,10 @@ tips_status() {
   echo "project tips: $(tips_pdir)"
   echo "global tips: $(tips_gdir)"
   echo "env: $(tips_env)"
+  # /handoff injects this: the tip-saving guide costs tokens only when on.
+  if tips_on && [[ -f $TIPS_GUIDE ]]; then
+    echo; cat "$TIPS_GUIDE"
+  fi
 }
 
 # PostToolUseFailure hook: reads the hook JSON on stdin, prints
