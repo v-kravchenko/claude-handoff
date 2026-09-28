@@ -895,10 +895,11 @@ PAGE = r"""<!doctype html>
   --branchbg: #dcf1e2; --branchfg: #1d6b37; --commitbg: #ece6f7; --commitfg: #5b3f97;
   --mark: #fff0a8; --ok: #1f9d55; --tipbg: #fdf1d6; --tipfg: #8a5a00;
 }
+/* Theme: auto (system), or data-theme="light"/"dark" on <html> from the header button. */
 @media (prefers-color-scheme: dark) {
-  .avatar { background: hsl(var(--h) 35% 24%) !important; color: hsl(var(--h) 80% 80%) !important; }
-  .project { box-shadow: none; }
-  :root {
+  :root:not([data-theme="light"]) .avatar { background: hsl(var(--h) 35% 24%) !important; color: hsl(var(--h) 80% 80%) !important; }
+  :root:not([data-theme="light"]) .project { box-shadow: none; }
+  :root:not([data-theme="light"]) {
     --bg: #1e1f22; --card: #2b2d30; --fg: #dfe1e5; --muted: #979ea8; --line: #3a3d42;
     --accent: #6ea0f5; --accentbg: #2a3a55; --code: #36393e; --warn: #f28b82;
     --arch: #e0c46c; --archbg: #3d3522; --addbg: #23402b; --delbg: #4a2626;
@@ -906,6 +907,17 @@ PAGE = r"""<!doctype html>
     --mark: #5a4b12; --ok: #5fcf8a; --tipbg: #3d3320; --tipfg: #f0c872;
   }
 }
+:root[data-theme="dark"] .avatar { background: hsl(var(--h) 35% 24%) !important; color: hsl(var(--h) 80% 80%) !important; }
+:root[data-theme="dark"] .project { box-shadow: none; }
+:root[data-theme="dark"] {
+  --bg: #1e1f22; --card: #2b2d30; --fg: #dfe1e5; --muted: #979ea8; --line: #3a3d42;
+  --accent: #6ea0f5; --accentbg: #2a3a55; --code: #36393e; --warn: #f28b82;
+  --arch: #e0c46c; --archbg: #3d3522; --addbg: #23402b; --delbg: #4a2626;
+  --branchbg: #22402d; --branchfg: #9fd9b0; --commitbg: #3a3050; --commitfg: #cbb8f2;
+  --mark: #5a4b12; --ok: #5fcf8a; --tipbg: #3d3320; --tipfg: #f0c872;
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--fg);
@@ -933,6 +945,12 @@ button:focus-visible, #q:focus-visible { outline: 2px solid var(--accent); outli
 
 .seg { display: inline-flex; background: var(--code); border-radius: 8px; padding: 2px; }
 .seg button { border: 0; background: none; border-radius: 6px; padding: 5px 12px; color: var(--muted); }
+.count { display: inline-block; min-width: 20px; margin-left: 6px; padding: 0 6px; border-radius: 10px;
+  font-size: 12px; line-height: 18px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums;
+  color: var(--muted); background: var(--line); }
+.count.tips, .seg [aria-selected="true"] .count.tips { color: var(--tipfg); background: var(--tipbg); }
+.seg [aria-selected="true"] .count { color: var(--accent); background: var(--accentbg); }
+.seg .count.tips { color: var(--muted); background: var(--line); }
 .seg button[aria-selected="true"] { background: var(--card); color: var(--fg); box-shadow: 0 1px 2px #0002; }
 .project { --h: 220; background: var(--card); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 1px 2px #0000000a, 0 6px 16px -8px #00000014; overflow: hidden; min-width: 0;
@@ -965,11 +983,21 @@ h2 .ppath { color: var(--muted); font-weight: 400; font-size: 12px; overflow: hi
 .item.dim { opacity: .6; }
 .head:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
 .arrow { display: inline-flex; color: var(--muted); padding: 0 4px; }
-.arrow svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.arrow svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .item:hover .arrow { color: hsl(var(--h) 60% 45%); }
 /* Global tips: a heading over a grid of small cards. */
 .globalsec { grid-column: 1 / -1; }
 .globalsec h2 { padding: 6px 2px 10px; }
+.projhead { grid-column: 1 / -1; padding: 6px 2px 0; --h: 220; }
+.gtoggle { cursor: pointer; user-select: none; border-radius: 10px; }
+.sechead.gtoggle { width: fit-content; padding-right: 8px; }
+.gtoggle.shut .avatar svg { transform: none; }  /* .shut turns only the chevron */
+.pname .count { vertical-align: 2px; }
+.gtoggle:hover .pname { color: var(--tipfg); }
+.gtoggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.gtoggle .chev { display: inline-flex; margin-left: 4px; color: var(--muted); align-self: center; }
+.gtoggle .chev svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; transition: transform .15s; }
 .tipgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; }
 .item.tcard { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
   border-left: 3px solid var(--tipfg); box-shadow: 0 1px 2px #0000000a; }
@@ -1081,11 +1109,16 @@ footer { margin-top: 20px; font-size: 13px; }
 </style>
 </head>
 <body>
+<script>
+  // Before first paint: no flash of the wrong theme.
+  try { const t = localStorage.getItem("handoffs.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <main>
   <header>
     <h1>Handoffs</h1>
     <input id="q" type="search" placeholder="Search  /" aria-label="Search tasks and handoff text" autocomplete="off">
     <button id="reload" class="ib ghost" title="Reload" aria-label="Reload"></button>
+    <button id="theme" class="ib ghost"></button>
   </header>
   <div id="error" class="error" hidden></div>
   <div id="list"></div>
@@ -1099,7 +1132,8 @@ footer { margin-top: 20px; font-size: 13px; }
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
-const state = { q: "", archOpen: [], tab: {}, open: null };  // open: key of the item in the panel
+const state = { q: "", archOpen: [], tab: {}, open: null,
+  globalOpen: localStorage.getItem("handoffs.globalOpen") === "1" };  // Global tips start collapsed  // open: key of the item in the panel
 let data = null;
 let hits = new Map();  // full-text search: task key -> snippet
 const LABEL = "Copy";
@@ -1288,21 +1322,28 @@ function markdown(src, title) {
 }
 
 const ICONS = {
-  copy: ["M9 9h11v11H9z", "M5 15V5a2 2 0 0 1 2-2h10"],
-  check: ["M5 12l5 5L20 7"],
-  undo: ["M9 14L4 9l5-5", "M4 9h10a6 6 0 0 1 0 12h-3"],
-  down: ["M6 9l6 6 6-6"],
-  right: ["M9 6l6 6-6 6"],
-  branch: ["M6 3v12", "M18 6a3 3 0 1 0 0 .01", "M6 18a3 3 0 1 0 0 .01", "M18 9c0 6-12 3-12 9"],
-  commit: ["M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6", "M3 12h6", "M15 12h6"],
-  close: ["M6 6l12 12", "M18 6L6 18"],
-  up: ["M6 15l6-6 6 6"],
-  reload: ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4v7h-7"],
-  edit: ["M4 20h4L19 9l-4-4L4 16z", "M13 7l4 4"],
-  trash: ["M4 7h16", "M9 7V4h6v3", "M6 7l1 13h10l1-13"],
-  task: ["M9 6h11", "M9 12h11", "M9 18h11", "M4 6h.01", "M4 12h.01", "M4 18h.01"],
-  tip: ["M9 18h6", "M10 21h4", "M12 3a6 6 0 0 0-4 10.5c.8.8 1 1.5 1 2.5h6c0-1 .2-1.7 1-2.5A6 6 0 0 0 12 3z"],
-  globe: ["M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18", "M3 12h18", "M12 3c3 3 3 15 0 18", "M12 3c-3 3-3 15 0 18"],
+  // Lucide icons (ISC license, lucide.dev); circles, lines and rects written as paths.
+  copy: ["M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1 -2 2h-10a2 2 0 0 1 -2 -2v-10a2 2 0 0 1 2 -2z", "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"],
+  check: ["M20 6 9 17l-5-5"],
+  undo: ["M9 14 4 9l5-5", "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"],
+  down: ["m6 9 6 6 6-6"],
+  right: ["m9 18 6-6-6-6"],
+  branch: ["M15 6a9 9 0 0 0-9 9V3", "M15.0 6a3 3 0 1 0 6.0 0a3 3 0 1 0 -6.0 0", "M3.0 18a3 3 0 1 0 6.0 0a3 3 0 1 0 -6.0 0"],
+  commit: ["M9.0 12a3 3 0 1 0 6.0 0a3 3 0 1 0 -6.0 0", "M3 12L9 12", "M15 12L21 12"],
+  close: ["M18 6 6 18", "m6 6 12 12"],
+  up: ["m18 15-6-6-6 6"],
+  reload: ["M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8", "M21 3v5h-5"],
+  edit: ["M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z", "m15 5 4 4"],
+  trash: ["M10 11v6", "M14 11v6", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6", "M3 6h18", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"],
+  task: ["M3 5h.01", "M3 12h.01", "M3 19h.01", "M8 5h13", "M8 12h13", "M8 19h13"],
+  tip: ["M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5", "M9 18h6", "M10 22h4"],
+  folder: ["M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"],
+  globe: ["M2.0 12a10 10 0 1 0 20.0 0a10 10 0 1 0 -20.0 0", "M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20", "M2 12h20"],
+  sun: ["M12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8", "M12 2v2", "M12 20v2", "m4.93 4.93 1.41 1.41", "m17.66 17.66 1.41 1.41",
+    "M2 12h2", "M20 12h2", "m6.34 17.66-1.41 1.41", "m19.07 4.93-1.41 1.41"],
+  moon: ["M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"],
+  auto: ["M12 2v2", "M14.837 16.385a6 6 0 1 1-7.223-7.222c.624-.147.97.66.715 1.248a4 4 0 0 0 5.26 5.259c.589-.255 1.396.09 1.248.715",
+    "M16 12a4 4 0 0 0-4-4", "m19 5-1.256 1.256", "M20 12h2"],
 };
 function icon(name) {
   const NS = "http://www.w3.org/2000/svg";
@@ -1381,7 +1422,8 @@ function details(t, box, actions) {
   view.setAttribute("role", "tabpanel");
   const tab = (text) => { const b = el("button", "", text); b.setAttribute("role", "tab"); tabs.appendChild(b); return b; };
   const latest = tab("Latest");
-  const hist = tab(t.versions > 1 ? "History (" + t.versions + ")" : "History");
+  const hist = tab("History");
+  if (t.versions > 1) hist.appendChild(el("span", "count", String(t.versions)));
   const bar = el("div", "dbar");
   bar.appendChild(tabs);
   actions.forEach((a) => bar.appendChild(a));
@@ -1736,12 +1778,29 @@ function render() {
   const list = $("#list");
   list.textContent = "";
   let shownAny = false;
+  const count = (n, cls) => el("span", "count" + (cls ? " " + cls : ""), String(n));
+  // Section heading: icon avatar, title with a count, subtitle (Projects, Global tips).
+  const secHead = (name, title, sub, cls) => {
+    const head = el("h2", "sechead" + (cls ? " " + cls : ""));
+    const av = el("span", "avatar");
+    av.appendChild(icon(name));
+    head.appendChild(av);
+    const pt = el("span", "ptitle");
+    const pn = el("span", "pname", title);
+    pt.appendChild(pn);
+    pt.appendChild(el("span", "ppath", sub));
+    head.appendChild(pt);
+    return [head, pn];
+  };
+  // "Projects" heading over the tiles; added before the first tile.
+  const [phead, pname] = secHead("folder", "Projects", "tasks and tips of each project directory", "projhead");
   const items = (nodes) => { const box = el("div", "items"); nodes.forEach((n) => box.appendChild(n)); return box; };
 
   projects.forEach((project) => {
     const tasks = all.filter((t) => t.project === project && matches(t));
     const ptips = tipsOf(slugOf[project]);
     if (!tasks.length && !ptips.length) return;
+    if (!shownAny) list.appendChild(phead);
     shownAny = true;
     const act = tasks.filter((t) => t.status === "active");
     const arch = tasks.filter((t) => t.status === "archived");
@@ -1771,7 +1830,8 @@ function render() {
       const tabs = el("div", "seg ptabs");
       tabs.setAttribute("role", "tablist");
       [["tasks", "Tasks", act.length], ["tips", "Tips", ptips.length]].forEach(([k, label, n]) => {
-        const b = el("button", "", label + " " + n);
+        const b = el("button", "", label);
+        b.appendChild(el("span", "count " + k, String(n)));
         b.setAttribute("role", "tab");
         b.setAttribute("aria-selected", String(k === tab));
         b.addEventListener("click", () => { state.tab[project] = k; render(); });
@@ -1800,24 +1860,37 @@ function render() {
     list.appendChild(sec);
   });
   // Global tips: a heading and a grid of cards across the full width.
+  const nproj = list.children.length - (shownAny ? 1 : 0);
+  if (shownAny) pname.appendChild(count(nproj));
   const gtips = tipsOf("_global");
   if (gtips.length) {
     shownAny = true;
+    const open = state.globalOpen || !!q;  // a search shows matching global tips
     const h = 200;
     const sec = el("section", "globalsec");
     sec.style.setProperty("--h", h);
-    const head = el("h2");
-    const av = el("span", "avatar");
-    av.appendChild(icon("globe"));
-    head.appendChild(av);
-    const pt = el("span", "ptitle");
-    pt.appendChild(el("span", "pname", "Global tips"));
-    pt.appendChild(el("span", "ppath", "hold in every project on this machine"));
-    head.appendChild(pt);
+    const [head, pn] = secHead("globe", "Global tips", "hold in every project on this machine",
+      "gtoggle" + (open ? "" : " shut"));
+    pn.appendChild(count(gtips.length, "tips"));
+    head.tabIndex = 0;
+    head.setAttribute("role", "button");
+    head.setAttribute("aria-expanded", String(open));
+    const toggle = () => {
+      state.globalOpen = !state.globalOpen;
+      localStorage.setItem("handoffs.globalOpen", state.globalOpen ? "1" : "0");
+      render();
+    };
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+    const chev = el("span", "chev");
+    chev.appendChild(icon("down"));
+    head.appendChild(chev);
     sec.appendChild(head);
-    const grid = el("div", "tipgrid");
-    tipsList(gtips, globalWho, h).forEach((c) => { c.classList.add("tcard"); grid.appendChild(c); });
-    sec.appendChild(grid);
+    if (open) {
+      const grid = el("div", "tipgrid");
+      tipsList(gtips, globalWho, h).forEach((c) => { c.classList.add("tcard"); grid.appendChild(c); });
+      sec.appendChild(grid);
+    }
     list.appendChild(sec);
   }
   if (!shownAny) {
@@ -1848,6 +1921,19 @@ async function load() {
 }
 
 $("#reload").appendChild(icon("reload"));
+// Theme button: auto (system) -> light -> dark -> auto; kept in localStorage.
+const THEMES = { auto: "light", light: "dark", dark: "auto" };
+function setTheme(t) {
+  const b = $("#theme");
+  if (t === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  try { if (t === "auto") localStorage.removeItem("handoffs.theme"); else localStorage.setItem("handoffs.theme", t); } catch (e) { /* private mode */ }
+  b.textContent = "";
+  b.appendChild(icon(t === "light" ? "sun" : t === "dark" ? "moon" : "auto"));
+  b.title = "Theme: " + t + " (click: " + THEMES[t] + ")";
+  b.setAttribute("aria-label", b.title);
+}
+setTheme(document.documentElement.dataset.theme || "auto");
+$("#theme").addEventListener("click", () => setTheme(THEMES[document.documentElement.dataset.theme || "auto"]));
 $("#pclose").appendChild(icon("close"));
 $("#pclose").addEventListener("click", closePanel);
 $("#scrim").addEventListener("click", closePanel);

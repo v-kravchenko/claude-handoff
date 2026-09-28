@@ -16,12 +16,17 @@ All notable changes to this project are documented here. The format follows
 - Tip usage on the dashboard: each tip shows how often it was offered (by a
   hook or search), opened, verified and refuted; "opened N×" or "never
   opened" (offered 5+ times) chips help to find useless tips.
+- Dashboard theme button next to Reload: auto (system), light or dark,
+  remembered in the browser.
 
 ### Changed
 
 - The tips log (`_tips/log.jsonl`) keeps found ids instead of the search text,
   so nothing needs masking (`tips_redact` is gone), and rotates to
   `log.1.jsonl` past 256 KB (`TIPS_LOG_MAX`).
+- Dashboard: *Projects* and *Global tips* sections with matching headings and
+  counts; *Global tips* is collapsed by default (a search opens it). Tab and
+  History counts are badges. All icons are now [Lucide](https://lucide.dev).
 - `/pickup` shows the age of an older handoff in days (`age: 30d`, not `720h`).
 
 ### Fixed
