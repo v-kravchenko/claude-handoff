@@ -11,6 +11,19 @@ All notable changes to this project are documented here. The format follows
 - `/handoff` loads the tip-saving instructions only with tips on: they moved
   to `skills/handoff/references/tips.md`, which `tips status` prints; with
   tips off the skill prompt is a third smaller.
+- Dashboard: projects are equal-height tiles in a responsive grid, each
+  with a colour accent, initials, the last handoff's age and *Tasks*/*Tips*
+  tabs; a task or tip opens in a side panel (Esc closes it) instead of
+  expanding in place; global tips are cards; a freshness dot per task;
+  project sections no longer collapse. Compact rows (title, `@task`,
+  age, Copy and a chevron; no Details button), the search in the header,
+  neutral section headings,
+  bold tip labels.
+
+### Added
+
+- Dashboard: search matches are highlighted, `/` focuses the search and
+  `Esc` clears it, *Clear search* when nothing matches.
 
 ## [1.2.2] - 2026-09-28
 

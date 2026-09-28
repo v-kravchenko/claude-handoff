@@ -203,28 +203,29 @@ $ handoffs
 handoffs: http://127.0.0.1:8765/  (root: ~/.claude/handoffs; Ctrl+C to stop)
 ```
 
-Tasks are grouped by project (the directory the handoffs belong to); each
-project section shows its active tasks and folds its archived ones under
-*Archived (N)*. Sections collapse with a tap. Each card shows the task,
-its title and age, and chips only when something needs attention
-(archived, idle for 14+ days, a missing project directory). Only one card
-is expanded at a time. Its buttons:
+Each project (the directory the handoffs belong to) is a tile in a grid,
+with a coloured accent and initials; it lists its active tasks and folds
+its archived ones under *Archived (N)*. Each task shows a freshness dot (today, last 2 weeks, older), the
+title, the task, its age, and chips only when something needs attention
+(archived, idle for 14+ days, a missing project directory). A tap on a
+task or tip opens it in a side panel; `Esc` or a tap outside closes it.
+`/` focuses the search, `Esc` clears it.
 
-- **Copy resume** copies the resume command, `cd ~/'project' && claude "/pickup @task"`.
-- **Details** (or a tap on the card) shows the branch and commit at
+- **Copy** (on the row and in the panel) copies the resume command, `cd ~/'project' && claude "/pickup @task"`.
+- The side panel shows the branch and commit at
   handoff time and renders the whole latest handoff. The *History* tab
   lists every saved version, opens any of them and shows the diff against
   the previous one. The staleness report is left to `/pickup`.
-- **Done** (in *Details*) archives an active task and **Restore** brings an
+- **Done** (in the panel) archives an active task and **Restore** brings an
   archived one back, like `/handoff @task done` and the *Restore* option of
   `/pickup`.
-- **Rename** (in *Details*) gives a task a new name (lowercase
+- **Rename** (in the panel) gives a task a new name (lowercase
   `a-z0-9._-`, not taken by another active or archived task of the
   project) and updates the `task:` field of its handoffs.
 
-Tips (see [Tips](#tips)) fold under *Tips (N)* in their project's section;
-global tips under *Global tips (N)* at the bottom. Refuted and superseded
-tips are dimmed. A tap on a tip shows its `when`, keywords and text, and
+Tips (see [Tips](#tips)) sit on the *Tips* tab of their project's tile;
+global tips are cards under *Global tips* at the bottom. Refuted and superseded
+tips are dimmed. A tip's panel shows its text, `when` and keywords, and
 **Delete** removes a useless or outdated tip. Verifying, refuting, moving
 and editing tips is left to the agent via `/tips`.
 
