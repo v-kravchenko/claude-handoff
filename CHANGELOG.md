@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `/handoff` writes the handoff in the language of the conversation (headings
+  and frontmatter keys stay English), instead of drifting to the template's
+  English.
+
+### Fixed
+
+- `install.sh --uninstall` / `--no-dashboard` no longer abort where there is
+  no systemd or launchd (Termux).
+- `tests/test.sh` no longer restarts and uninstalls the real dashboard service.
+
 ## [1.3.1] - 2026-09-28
 
 ### Added

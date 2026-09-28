@@ -11,6 +11,8 @@ export HANDOFF_ROOT="$TMP/root"
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# Never touch the real dashboard service (install.sh runs `handoffs service restart|uninstall`).
+export HANDOFF_SERVICE_KIND=none XDG_CONFIG_HOME="$TMP/xdg-config"
 
 PASS=0 FAIL=0
 OUT=""

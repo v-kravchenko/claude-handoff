@@ -75,7 +75,11 @@ Arguments: $ARGUMENTS
    - nothing one-off: usage limits, CI run IDs, "this session only resumed";
    - other tasks: refer to them as `@task`, without describing their state;
    - environment facts from an earlier handoff: keep only those confirmed in
-     this session.
+     this session;
+   - language: write the text in the language the user speaks in this
+     conversation, even if `latest` or this template is in another one; don't
+     translate it to English. Keep the section headings, frontmatter keys,
+     code, paths and technical terms as they are.
 7. Never include secrets (tokens, passwords, keys, credentials) — reference
    where they live instead.
 8. Write the file with the Write tool to the `file` path from step 3.
