@@ -1,6 +1,6 @@
 {
   "name": "handoff",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Save a Claude Code session as a handoff and resume it later with /pickup. Several named tasks per project directory, git-aware staleness checks.",
   "author": {
     "name": "v-kravchenko",
