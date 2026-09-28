@@ -103,6 +103,9 @@ tips_score() {
       up = "АБВГҐДЕЄЁЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"; lo = "абвгґдеєёжзиіїйклмнопрстуфхцчшщъыьэюя"
       for (i = 1; i < length(up); i += 2) { NC++; UP[NC] = substr(up, i, 2); LO[NC] = substr(lo, i, 2) }
       q = lc(ENVIRON["TIPS_Q"])
+      # An array, not a regex: Termux gawk in the C locale aborts on UTF-8 bytes in a regex group.
+      n = split("the and for with not why how what when does что що як при для або чому", w, " ")
+      for (i = 1; i <= n; i++) STOP[w[i]] = 1
     }
     # tolower for ASCII and Cyrillic (all its capitals start with \320 or \322).
     function lc(s,   i) {
@@ -179,7 +182,7 @@ tips_score() {
         kw = lc(F["keywords"]); ti = lc(F["title"]); wh = lc(F["when"]); bo = lc(body)
         for (i = 1; i <= n; i++) {
           t = w[i]
-          if (ulen(t) < 3 || t ~ /^(the|and|for|with|not|why|how|what|when|does|что|що|як|при|для|або|чому)$/) continue
+          if (ulen(t) < 3 || t in STOP) continue
           if (ulen(t) > 6) t = uprefix(t, 5)
           s = index(kw, t) ? 3 : index(ti, t) ? 2 : index(wh, t) ? 2 : index(bo, t) ? 1 : 0
           if (s) { score += s; hits++ }
@@ -192,7 +195,7 @@ tips_score() {
     FNR == 1 { flush(); fname = FILENAME; fm = 0; body = ""; split("", F) }
     FNR == 1 && $0 == "---" { fm = 1; next }
     fm && $0 == "---" { fm = 0; next }
-    fm { k = $0; sub(/:.*/, "", k); v = $0; sub(/^[^:]*: */, "", v); F[k] = v; next }
+    fm { c = index($0, ":"); k = c ? substr($0, 1, c - 1) : $0; v = c ? substr($0, c + 1) : ""; sub(/^ +/, "", v); F[k] = v; next }  # no .* : Termux gawk in C skips UTF-8 bytes
     { body = body " " $0 }
     END { flush() }' "${files[@]}" |
     sort -t "$(printf '\t')" -k1,1nr -k3,3 |
