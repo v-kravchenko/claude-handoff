@@ -35,7 +35,8 @@ Run each `handoff.sh` command in its own Bash call, exactly as written: no
      go on with step 3.
 3. Otherwise treat the handoff as your working context. `task` is the task a
    later `/handoff` continues. `work dir` is where the work happened (it may be
-   a nested repo); run commands there. Check the staleness report: new
+   a nested repo); run commands there. Paths in the handoff are relative to
+   the project directory unless they start with `/` or `~`. Check the staleness report: new
    commits, a non-ancestor commit or dirty files mean the world moved on —
    read the relevant diffs/files before trusting the handoff's State and Next
    steps, and point out the conflicts.

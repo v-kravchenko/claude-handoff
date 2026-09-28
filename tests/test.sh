@@ -59,7 +59,8 @@ has "(no tasks)"
 
 run "$P" meta
 has "repo: none"
-has "dir: $P"
+has "dir: ." "dir is relative to the project"
+has "host: "
 
 run "$P" new "Bad Name"
 has "INVALID TASK"
@@ -164,9 +165,9 @@ git init -q -b main . && git commit -q --allow-empty -m first
 
 cd "$G/sub" || exit 1
 run "$G" meta
-has "repo: $G"
+has "repo: ." "repo is relative to the project"
 has "branch: main"
-has "dir: $G/sub" "dir is the cwd, not the project"
+has "dir: sub" "dir is the cwd, not the project"
 
 run "$G" git
 has "## recent commits"
@@ -186,7 +187,7 @@ has "dirty: ?? dirty.txt"
 
 git worktree add -q "$TMP/wt" -b feature 2>/dev/null
 run "$TMP/wt" show @gtask
-has "file: $GF" "worktrees share the main repo's handoffs"
+has "NO TASK: @gtask" "a worktree is a project of its own (its directory name)"
 
 git reset -q --hard HEAD~1 && git commit -q --allow-empty -m other
 git reflog expire --expire=now --all && git gc -q --prune=now 2>/dev/null
@@ -215,7 +216,7 @@ lacks "commits since" "non-git handoff has no git report"
 # --- paths with spaces ---------------------------------------------------
 S="$TMP/My Proj"; mkdir -p "$S"; cd "$S" || exit 1
 SF=$(save "$S" spaced "Spaced task")
-case $SF in *"My Proj/spaced/"*.md) ok ;; *) fail "project path with a space: $SF" ;; esac
+case $SF in */my-proj/spaced/*.md) ok ;; *) fail "project path with a space: $SF" ;; esac
 run "$S" show @spaced
 has "file: $SF" "show works in a project path with a space"
 
@@ -301,24 +302,75 @@ run "$S" show spaced
 has "file: $C" "a bare word is a task even if such a file exists"
 
 # --- project keys ----------------------------------------------------------
-mkdir -p "$TMP/h" "$TMP/hx"
-HOME="$TMP/h" run "$TMP/h" new t
-has "$HANDOFF_ROOT/home/t/" "\$HOME maps to home"
-HOME="$TMP/h" run "$TMP/hx" new t
-lacks "$HANDOFF_ROOT/homex" "a sibling of \$HOME is not treated as home"
+# The key is the directory's name, wherever the directory is.
+mkdir -p "$TMP/m1/Same App" "$TMP/m2/deep/same-app" "$TMP/k/.Dot_x" "$TMP/k/a~b" "$TMP/k/ÄÖ"
+run "$TMP/m1/Same App" new t
+has "$HANDOFF_ROOT/same-app/t/" "the key is the lowercased directory name"
+run "$TMP/m2/deep/same-app" tasks
+has "project: @same-app" "the same name elsewhere is the same project"
+run "$TMP/k/.Dot_x" new t
+has "$HANDOFF_ROOT/dot_x/t/" "leading dots are dropped"
+run "$TMP/k/a~b" new t
+has "$HANDOFF_ROOT/a-b/t/" "other characters become -"
+run "$TMP/k/ÄÖ" new t
+has "$HANDOFF_ROOT/root/t/" "a name with nothing left is root"
 HANDOFF_ROOT="$TMP/r2" run / new t
 has "$TMP/r2/root/t/" "the filesystem root maps to root"
-HOME="$TMP/h" run "$TMP/hx" new t
-has "$HANDOFF_ROOT/root$(tr / '~' <<<"$TMP")~hx/t/" "a path outside \$HOME starts with root~"
-mkdir -p "$TMP/h/a~b" "$TMP/h/a/b" "$TMP/h/p%7Eq" "$TMP/h/p~q"
-HOME="$TMP/h" run "$TMP/h/a~b" new t; K1=$OUT
-HOME="$TMP/h" run "$TMP/h/a/b" new t
-assert "a~b and a/b get different keys" [ "$K1" != "$OUT" ]
-has "$HANDOFF_ROOT/home~a~b/t/" "a/b maps to home~a~b"
-HOME="$TMP/h" run "$TMP/h/p%7Eq" new t; K1=$OUT
-HOME="$TMP/h" run "$TMP/h/p~q" new t
-assert "a literal %7E and ~ get different keys" [ "$K1" != "$OUT" ]
-has "$HANDOFF_ROOT/home~p%7Eq/t/" "~ in a name is escaped"
+OUT=$(env -u HANDOFF_ROOT XDG_DATA_HOME="$TMP/xdg-data" "$SCRIPT" "$TMP/k/a~b" new t)
+has "$TMP/xdg-data/claude-handoff/a-b/t/" "the default root is \$XDG_DATA_HOME/claude-handoff"
+OUT=$(env -u HANDOFF_ROOT -u XDG_DATA_HOME HOME="$TMP/h" "$SCRIPT" "$TMP/k/a~b" new t)
+has "$TMP/h/.local/share/claude-handoff/a-b/t/" "without XDG_DATA_HOME the root is ~/.local/share/claude-handoff"
+OUT=$(env -u HANDOFF_ROOT CLAUDE_CONFIG_DIR="$TMP/cfg" XDG_DATA_HOME="$TMP/xdg-data" "$SCRIPT" "$TMP/k/a~b" new t)
+lacks "$TMP/cfg" "CLAUDE_CONFIG_DIR is not the handoff root any more"
+
+# A moved project keeps its handoffs; relative paths follow it.
+MV1="$TMP/old/mover"; mkdir -p "$MV1/sub"; cd "$MV1/sub" || exit 1
+MF=$(save "$MV1" mtask "Mover")
+cd "$TMP" || exit 1
+mkdir -p "$TMP/new" && mv "$MV1" "$TMP/new/"
+run "$TMP/new/mover" show @mtask
+has "file: $MF" "a moved project keeps its handoffs"
+has "work dir: $TMP/new/mover/sub" "a relative dir follows the project"
+sed -i.bak "s|^dir: .*|dir: $MV1/sub|" "$MF" && rm -f "$MF.bak"
+run "$TMP/new/mover" show @mtask
+has "work dir: $TMP/new/mover/sub" "an old absolute dir under the old project follows it"
+
+# describe: a description, and <parent>~<name> for same-named directories.
+mkdir -p "$TMP/q1/api" "$TMP/q2/api" "$TMP/api"
+run "$TMP/api" describe
+has "project: @api" "describe without text prints the project"
+lacks " — "
+run "$TMP/api" describe "Plain API"
+has "project: @api — Plain API" "describe sets the description"
+run "$TMP/api" tasks
+has "project: @api — Plain API" "tasks prints the description"
+save "$TMP/api" plain "Plain" >/dev/null
+run "$TMP/q1/api" describe --parent "First API"
+has "project is now @q1~api"
+has "project: @q1~api — First API"
+save "$TMP/q1/api" first "First" >/dev/null
+run "$TMP/q1/api" tasks
+has "@first |" "q1/api has its own tasks"
+lacks "@plain |"
+run "$TMP/q2/api" tasks
+has "@plain |" "q2/api without --parent is plain api"
+run "$TMP/q1/api" show @first
+has "project: @q1~api — First API" "show prints the project and description"
+run "$TMP/q1/api" describe --no-parent
+has "EXISTS: @api" "--no-parent refuses to merge into an existing project"
+mkdir -p "$TMP/q3/solo"
+run "$TMP/q3/solo" describe --parent
+save "$TMP/q3/solo" s1 "S1" >/dev/null
+mkdir -p "$HANDOFF_ROOT/_tips/q3~solo" && : >"$HANDOFF_ROOT/_tips/q3~solo/x.md"
+run "$TMP/q3/solo" describe --no-parent
+has "renamed to @solo"
+assert "--no-parent moves the tasks" [ -d "$HANDOFF_ROOT/solo/s1" ]
+assert "--no-parent moves the tips" [ -f "$HANDOFF_ROOT/_tips/solo/x.md" ]
+run "$TMP/q3/solo" tasks
+has "project: @solo"
+has "@s1 |"
+run / describe --parent
+has "NO PARENT"
 
 # --- tips ------------------------------------------------------------------
 TP="$TMP/tipsproj"; mkdir -p "$TP"; cd "$TP" || exit 1
@@ -526,6 +578,27 @@ assert "refuted folds a newline into one line" grep -qx "refuted: $(date +%Y-%m-
 tip "$TROOT/$KEYDIR" comma-kw "Comma message" '"permission denied, please try again"'
 run "$TP" tips search --error "ssh: Permission denied, please try again."
 has "comma-kw" "error mode matches a quoted keyword with a comma"
+# YAML frontmatter: quoted title/when, keywords as a [list]; the old form still works.
+tip "$TROOT/$KEYDIR" yaml-q '"Rule: \"quoted\" title"' '[yamlword, "fatal: yaml colon thing"]'
+run "$TP" tips search yamlword
+has 'yaml-q | project | Rule: "quoted" title' "a quoted title is shown unquoted"
+run "$TP" tips search --error "git says fatal: yaml colon thing here"
+has "yaml-q" "a quoted item of a keywords list matches"
+tip "$TROOT/$KEYDIR" yaml-esc "Escaped quote" '[yamlesc, "\"source\": \"./\""]'
+run "$TP" tips search --error 'marketplace.json has "source": "./" here'
+has "yaml-esc" "an escaped quote inside a list item matches literally"
+run "$TP" tips refuted yaml-q "it broke: see #12"
+assert "refuted with ': ' is written quoted" grep -qx "refuted: \"$(date +%Y-%m-%d) it broke: see #12\"" "$TROOT/$KEYDIR/yaml-q.md"
+run "$TP" tips list
+has 'yaml-q | project | refuted | Rule: "quoted" title' "tips list unquotes the title"
+QF=$(save "$TP" yamltask "plain")
+sed -i.bak 's/^title: plain$/title: "Release 1.5.0: \"keys\""/' "$QF" && rm -f "$QF.bak"
+run "$TP" tasks
+has '@yamltask | Release 1.5.0: "keys" |' "a quoted handoff title is shown unquoted"
+sed -i.bak "s/^title: .*/title: 'it''s: single'/" "$QF" && rm -f "$QF.bak"
+run "$TP" tasks
+has "@yamltask | it's: single |" "a single-quoted title is unquoted"
+"$SCRIPT" "$TP" "done" yamltask >/dev/null
 run "$TP" tips search --error "ls: Permission denied"
 lacks "comma-kw" "error mode does not match a fragment of a quoted keyword"
 # The log keeps the found ids, never the query text.
@@ -541,6 +614,7 @@ assert "log rotates past TIPS_LOG_MAX" [ "$(wc -l <"$TROOT/log.1.jsonl")" -eq "$
 C2=$(git -C "$TP" rev-parse --short HEAD)
 git -C "$TP" worktree add -q "$TMP/tipswt" -b tipswt 2>/dev/null
 echo worktree >"$TMP/tipswt/a.txt"; git -C "$TMP/tipswt" commit -qam worktree
+tip "$TROOT/tipswt" wt-cite "Worktree cite" "cite" "cites: a.txt@$C2\n"  # a worktree is its own project
 tip "$TROOT/$KEYDIR" wt-cite "Worktree cite" "cite" "cites: a.txt@$C2\n"
 run "$TMP/tipswt" tips show wt-cite
 has "WARNING: a.txt changed in 1 commit(s) since $C2" "show checks cites in the worktree"
@@ -596,8 +670,12 @@ EOF
     >"$D/home~app/_archive/old/2026-09-01_080000.md"
   printf 'no frontmatter here\n' >"$D/other/bare/2026-09-02_090000.md"
   printf -- '---\ntitle: hidden\n---\n' >"$D/.hidden/x/2026-09-03_090000.md"
+  mkdir -p "$D/home~app/quoted" && printf -- '---\ntitle: "Fix: \\"a\\""\n---\n## Goal\ng\n' >"$D/home~app/quoted/2026-09-02_080000.md"
+  mkdir -p "$D/q1~api/t" && printf 'First API\n' >"$D/q1~api/_project.md"
+  printf -- '---\ntitle: q\n---\n' >"$D/q1~api/t/2026-09-02_090000.md"
   mkdir -p "$D/_tips/home~app" && printf -- '---\ntitle: a tip\n---\n' >"$D/_tips/home~app/tip.md"
   mkdir -p "$D/_tips/_global" "$D/_tips/home~gone"
+  printf -- '---\ntitle: "A: b"\nkeywords: [x, "y: z"]\n---\n' >"$D/_tips/home~app/qtip.md"
   printf -- '---\r\ntitle: global one\r\nkeywords: a, "b, c"\r\nenv: termux\r\nstatus: refuted\r\n---\r\nTip: body\r\n' \
     >"$D/_tips/_global/g1.md"
   printf 'no frontmatter\n' >"$D/_tips/home~gone/raw.md"
@@ -614,7 +692,7 @@ EOF
     if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); t={x["task"]:x for x in d["tasks"]}; sys.exit(0 if eval(sys.argv[2]) else 1)' "$OUT" "$1" 2>/dev/null
     then ok; else fail "$2"; fi
   }
-  jcheck 'sorted(t) == ["alpha", "bare", "old"]' "tasks: dirs without .md, dot dirs and _tips are skipped"
+  jcheck 'sorted(t) == ["alpha", "bare", "old", "quoted", "t"]' "tasks: dirs without .md, dot dirs and _tips are skipped"
   # shellcheck disable=SC2016 # backticks are part of the expected title
   jcheck 't["alpha"]["title"] == "Fix \"quotes\" & `code` — кирилиця"' "title with quotes and Cyrillic"
   jcheck 't["alpha"]["versions"] == 2 and t["alpha"]["status"] == "active"' "versions and status"
@@ -623,17 +701,22 @@ EOF
   jcheck 't["alpha"]["next"] == ["First step wraps here.", "Second", "Third"] and t["alpha"]["next_more"] == 2' "next steps: 3 items plus the rest"
   jcheck 't["alpha"]["project"] == "'"$P"'" and t["alpha"]["project_exists"]' "project path from frontmatter"
   jcheck 't["alpha"]["repo"] == "" and t["alpha"]["branch"] == "" and t["alpha"]["slug"] == "home~app"' "missing repo/branch are empty"
-  jcheck 't["old"]["status"] == "archived" and not t["old"]["project_exists"]' "archived task, missing path"
+  jcheck 't["old"]["status"] == "archived" and t["old"]["project"] == "'"$P"'" and t["old"]["project_exists"]' "a key's tasks share the path that exists here"
+  jcheck 't["bare"]["project"] == "other" and not t["bare"]["project_exists"]' "a key without a path is its own name"
+  jcheck 'd["projects"]["'"$P"'"] == {"name": "", "desc": ""} and d["projects"]["other"]["name"] == "other"' "old path keys have no display name"
+  jcheck 't["quoted"]["title"] == "Fix: \x22a\x22" and t["quoted"]["goal"] == "g"' "dashboard unquotes a YAML title"
+  jcheck 'd["projects"]["q1~api"] == {"name": "q1/api", "desc": "First API"}' "a <parent>~<name> key shows as parent/name, with its description"
   jcheck 't["old"]["from"] == "alpha" and t["alpha"]["from"] == ""' "from: is the parent task"
   jcheck 'len(t["old"]["goal"]) <= 201 and t["old"]["goal"].endswith("…")' "long goal is truncated"
   jcheck 't["bare"]["title"] == "bare" and t["bare"]["project"] == "other" and t["bare"]["created"].startswith("2026-09-02T09:00")' "no frontmatter: task name, slug, date from file name"
-  jcheck '[x["task"] for x in d["tasks"]] == ["alpha", "bare", "old"]' "newest first"
+  jcheck '[x["task"] for x in d["tasks"] if x["slug"] != "q1~api" and x["task"] != "quoted"] == ["alpha", "bare", "old"]' "newest first"
   # tips: TT maps "slug/id" to the tip.
   TT='{x["slug"] + "/" + x["id"]: x for x in d["tips"]}'
-  jcheck 'sorted('"$TT"') == ["_global/g1", "home~app/tip", "home~gone/raw"]' "tips: bad names, dot files and log.jsonl are skipped"
+  jcheck 'sorted('"$TT"') == ["_global/g1", "home~app/qtip", "home~app/tip", "home~gone/raw"]' "tips: bad names, dot files and log.jsonl are skipped"
   jcheck "$TT"'["home~app/tip"]["stats"] == {"offered": 1, "opened": 1, "last": "2026-09-03T10:00:00+0300"}' "tip stats count the project's events, old log too"
   jcheck "$TT"'["_global/g1"]["stats"] == {"offered": 1, "last": "2026-09-01T10:00:00+0300"}' "an event from any project counts for a global tip"
   jcheck "$TT"'["home~gone/raw"]["stats"] == {}' "a tip without events has empty stats"
+  jcheck "$TT"'["home~app/qtip"]["title"] == "A: b" and '"$TT"'["home~app/qtip"]["keywords"] == "x, \"y: z\""' "dashboard unquotes tip fields and a keywords list"
   jcheck '(lambda t: t["title"] == "a tip" and t["status"] == "active" and t["level"] == "project" and t["body"] == "")('"$TT"'["home~app/tip"])' "tip without status is active"
   jcheck '(lambda t: t["level"] == "global" and t["status"] == "refuted" and t["env"] == "termux" and t["keywords"] == "a, \"b, c\"" and t["body"] == "Tip: body")('"$TT"'["_global/g1"])' "global tip with CRLF and fields"
   jcheck '(lambda t: t["title"] == "raw" and t["body"] == "no frontmatter")('"$TT"'["home~gone/raw"])' "tip without frontmatter: id as title"

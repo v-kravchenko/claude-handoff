@@ -16,7 +16,7 @@
 # The questions default to the previous choices. Without a terminal and
 # without flags, the previous choices are kept (skills/handoff/install.conf;
 # a fresh install gets the dashboard, not tips).
-# Saved handoffs and tips (~/.claude/handoffs) are never touched.
+# Saved handoffs and tips ($HANDOFF_ROOT) are never touched.
 set -euo pipefail
 
 # Empty when the script is piped into bash.
@@ -293,7 +293,7 @@ main() {
     for s in "${SKILLS[@]}"; do remove_skill "$s"; done
     remove_tips
     remove_dashboard
-    echo "done: saved handoffs and tips were kept (${HANDOFF_ROOT:-$CFG/handoffs})"
+    echo "done: saved handoffs and tips were kept (${HANDOFF_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-handoff})"
     exit 0
   fi
 

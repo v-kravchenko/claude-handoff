@@ -26,8 +26,11 @@ machines, or to park a task and come back to it days later.
 - **Staleness report.** `/pickup` shows the handoff's age, the commits made
   since, a rebased or missing commit, uncommitted changes and a work
   directory that no longer exists.
-- **Git-aware.** Git worktrees of one repository share handoffs. Branch and
-  commit are recorded, and nested repositories inside a project work.
+- **Keyed by the directory's name.** A project is the name of the directory
+  the session was opened in, so it keeps its handoffs when the directory
+  moves, and the same directory name on another path is the same project.
+- **Git-aware.** Branch and commit are recorded, and nested repositories
+  inside a project work.
 - **Chained history.** Each handoff is written from the current state. It
   carries over from the task's last handoff only the open decisions and
   gotchas not recorded elsewhere. The last 10 per task are kept.
@@ -136,7 +139,7 @@ A typical loop:
 
 ```text
 > /handoff @auth-rewrite
-@auth-rewrite  ~/.claude/handoffs/home~code~app/auth-rewrite/2026-09-26_173557.md
+@auth-rewrite  ~/.local/share/claude-handoff/app/auth-rewrite/2026-09-26_173557.md
 Session middleware migrated; token refresh still failing in tests/auth.spec.ts.
 
 > /clear
@@ -206,12 +209,12 @@ A tip file:
 
 ```markdown
 ---
-title: E_ZQ_SHARD_SKEW from build.sh means a stale .cache/zq-index
-when: ./build.sh fails with code 71
-keywords: E_ZQ_SHARD_SKEW, "shard map out of sync", zq-index, build.sh
+title: "E_ZQ_SHARD_SKEW from build.sh means a stale .cache/zq-index"
+when: "./build.sh fails with code 71"
+keywords: [E_ZQ_SHARD_SKEW, "shard map out of sync", zq-index, build.sh]
 cites: build.sh@a1b2c3d
 origin: failure
-source: project=home~code~app commit=a1b2c3d date=2026-09-27 task=build session=...
+source: project=app commit=a1b2c3d date=2026-09-27 task=build session=...
 status: active
 ---
 Tip: delete .cache/zq-index and rerun ./build.sh.
@@ -226,7 +229,7 @@ the browser:
 
 ```text
 $ handoffs
-handoffs: http://127.0.0.1:8765/  (root: ~/.claude/handoffs; Ctrl+C to stop)
+handoffs: http://127.0.0.1:8765/  (root: ~/.local/share/claude-handoff; Ctrl+C to stop)
 ```
 
 Each project (the directory the handoffs belong to) is a tile in a grid,
@@ -283,7 +286,7 @@ handoffs service status | restart | uninstall
 ```
 
 The service starts at login and restarts on failure; add `--dry-run` to see
-the unit/plist without changing anything. `HANDOFF_ROOT`, `CLAUDE_CONFIG_DIR`
+the unit/plist without changing anything. `HANDOFF_ROOT`, `XDG_DATA_HOME`
 and `HANDOFF_PORT` are copied into it. `install.sh` restarts the service after
 an update and removes it on uninstall. On Linux, `loginctl enable-linger`
 keeps it running while you are logged out. Termux has no service manager: use
@@ -300,26 +303,44 @@ open, or tap the printed URL.
 Handoffs are plain Markdown files stored outside your repositories:
 
 ```text
-~/.claude/handoffs/
-└── <project-slug>/                 # home~code~app for ~/code/app, root~srv~app for /srv/app
+$HANDOFF_ROOT/                      # ~/.local/share/claude-handoff by default
+└── <project>/                      # app for ~/code/app and /srv/app; x~app with describe --parent
+    ├── _project.md                 # description (optional, handoff.sh describe)
     ├── <task>/
     │   ├── 2026-09-25_101500.md
     │   └── 2026-09-26_173557.md    # latest one wins
     └── _archive/
         └── <task>/...              # tasks finished with `/handoff @task done`
-~/.claude/handoffs/_tips/
-├── _global/<id>.md                 # global tips (this machine)
-├── <project-slug>/<id>.md          # project tips
+$HANDOFF_ROOT/_tips/
+├── _global/<id>.md                 # global tips
+├── <project>/<id>.md               # project tips
 └── log.jsonl                       # tip events for the dashboard stats (no query text); rotated to log.1.jsonl
 ```
 
-- The **project** is Claude Code's project directory (`$CLAUDE_PROJECT_DIR`).
-  Inside git it is the main repository root, so all worktrees map to the
-  same place.
-- Each file starts with YAML frontmatter (`project`, `dir`, `repo`, `branch`,
+- The **project** is the name of Claude Code's project directory
+  (`$CLAUDE_PROJECT_DIR`, the directory the session was opened in),
+  lowercased, with anything but `a-z0-9._-` turned into `-`. Where the
+  directory is does not matter: `~/code/app` and `/srv/app` are both `app`.
+  So:
+  - open the session in the project's root: a session in `~/code/app/src`
+    is the project `src`;
+  - a git worktree is a project of its own, named after its directory;
+  - a moved directory keeps its handoffs; after renaming it, rename
+    `$HANDOFF_ROOT/<project>` (and `$HANDOFF_ROOT/_tips/<project>`) too;
+  - two different directories with the same name share handoffs, unless
+    one of them runs `describe --parent` (below).
+- `handoff.sh PROJECT_DIR describe [TEXT]` prints or sets a description of
+  the project, shown by `/pickup`, `/handoff` and the dashboard.
+  `describe --parent [TEXT]` makes `<parent>~<name>` the directory's project,
+  a new one: `~/work/api` becomes `work~api`, and `api` stays as it was for
+  the other `api` directories. `describe --no-parent` renames it back to
+  `<name>` if that name is free.
+- Each file starts with YAML frontmatter (`project`, `host`, `dir`, `repo`, `branch`,
   `commit`, `created`, `task`, `from` for a fork, `session`, `title`), followed by
   the sections *Goal, State, Decisions, Key context, Gotchas, User
-  preferences, Next steps, Verify*.
+  preferences, Next steps, Verify*. `dir` and `repo` are relative to the
+  project directory (`.` for itself), so `/pickup` finds the work dir after
+  the project moved; handoffs saved before 1.5.0 have absolute paths.
 - The model writes the summary; `skills/handoff/handoff.sh` handles storage,
   task listing, pruning, archiving and the staleness report. The script
   always exits 0, because a failing `!` command would abort the skill.
@@ -336,13 +357,18 @@ archive.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `HANDOFF_ROOT` | `${CLAUDE_CONFIG_DIR:-~/.claude}/handoffs` | Where handoffs are stored. |
+| `HANDOFF_ROOT` | `${XDG_DATA_HOME:-~/.local/share}/claude-handoff` | Where handoffs and tips are stored; any directory works. |
 | `HANDOFF_KEEP` | `10` | Handoffs kept per task (a positive integer; anything else means 10). Older ones are deleted when you save. |
 | `HANDOFF_PORT` | `8765` | Default port of the `handoffs` dashboard. |
 | `TIPS_LOG_MAX` | `262144` | Size in bytes after which the tips log moves to `log.1.jsonl`. |
 | `HANDOFF_BIN_DIR` | `~/.local/bin` (`$PREFIX/bin` on Termux) | Where `install.sh` puts `handoffs`. |
 | `HANDOFF_REF` | `main` | Branch or tag the piped install script fetches. |
 | `HANDOFF_REPO` | `https://github.com/v-kravchenko/claude-handoff` | Repository the piped install script fetches (a fork or a local `file://` path). |
+
+Set `HANDOFF_ROOT` in both places that need it: `env` in
+`~/.claude/settings.json` for Claude Code sessions, and your shell profile
+(`~/.bashrc`, `~/.zshrc`) for the `handoffs` dashboard started from a
+terminal. Otherwise the dashboard reads the default root and shows no tasks.
 
 Set them in your shell profile or in the `env` block of
 `~/.claude/settings.json`.

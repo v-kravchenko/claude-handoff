@@ -6,7 +6,8 @@ Usage: handoffs [--port N] [--host ADDR] [--no-open] [--read-only] [--background
        handoffs service install|uninstall|restart|status [--port N] [--dry-run]
 
 Serves a page with every task of every project under the handoff
-root ($HANDOFF_ROOT, else $CLAUDE_CONFIG_DIR/handoffs, else ~/.claude/handoffs).
+root ($HANDOFF_ROOT, else $XDG_DATA_HOME/claude-handoff, else
+~/.local/share/claude-handoff).
 Data is read from disk on every request. Python 3.8+, standard library only.
 """
 
@@ -34,6 +35,7 @@ import webbrowser
 VERSION = "1.4.3"
 ARCHIVE = "_archive"
 TIPS = "_tips"  # tips store (skills/handoff/tips.sh), not a project
+DESC = "_project.md"  # a project's description (handoff.sh describe)
 GOAL_MAX = 200
 NEXT_MAX = 3
 PORT_TRIES = 10
@@ -43,12 +45,24 @@ LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 def handoff_root():
     root = os.environ.get("HANDOFF_ROOT")
     if not root:
-        config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
-        root = os.path.join(config, "handoffs")
+        data = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+        root = os.path.join(data, "claude-handoff")
     return root
 
 
 # --- parsing ------------------------------------------------------------------
+
+def unquote(value, is_list=False):
+    """A YAML "double" or 'single' quoted scalar, unquoted; for a list
+    (keywords: [a, "b: c"]) only the brackets go, the items keep their quotes."""
+    if is_list:
+        return value[1:-1].strip() if value[:1] == "[" and value[-1:] == "]" else value
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        return re.sub(r'\\(["\\])', r"\1", value[1:-1])
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1].replace("''", "'")
+    return value
+
 
 def parse_frontmatter(lines):
     """Returns (fields, index of the first body line)."""
@@ -61,7 +75,7 @@ def parse_frontmatter(lines):
             return fields, i + 1
         key, sep, value = line.partition(": ")
         if sep and key and key not in fields:
-            fields[key.strip()] = value.strip()
+            fields[key.strip()] = unquote(value.strip(), key.strip() == "keywords")
     return {}, 0  # unterminated: treat the whole file as body
 
 
@@ -116,11 +130,13 @@ def iso_created(created, filename):
 
 def own_repo(fields):
     """Git fields describe the project itself: the project directory is the
-    repository, or a worktree of it (then `repo` is the main checkout)."""
+    repository, or a worktree of it (then `repo` is the main checkout).
+    Since 1.5.0 `repo` and `dir` are relative to the project (`.` for it)."""
     project, repo = fields.get("project", ""), fields.get("repo", "")
     if not project or repo in ("", "none"):
         return False
-    return repo == project or (fields.get("dir") == project and os.path.exists(os.path.join(project, ".git")))
+    return repo in (".", project) or (
+        fields.get("dir") in (".", project) and os.path.exists(os.path.join(project, ".git")))
 
 
 def read_task(task_dir, task, status):
@@ -359,15 +375,48 @@ def collect(root):
                     tasks.append((slug, read_task(os.path.join(base, ARCHIVE, arch), arch, "archived")))
             else:
                 tasks.append((slug, read_task(os.path.join(base, name), name, "active")))
-    out = []
-    for slug, t in tasks:
+    out = [t for _, t in tasks if t]
+    for (slug, t) in tasks:
         if t:
             t["slug"] = slug
-            t["project"] = t["project"] or slug
-            out.append(t)
     out.sort(key=lambda t: t["saved"], reverse=True)
+    # One project per key, though its handoffs may come from other paths or
+    # machines: its path is the newest one that exists here, else the newest.
+    names, where = {}, {}
+    for t in out:
+        paths = where.setdefault(t["slug"], [])
+        if t["project"] and t["project"] not in paths:
+            paths.append(t["project"])
+    for slug, paths in where.items():
+        here = [p for p in paths if os.path.isdir(p)]
+        where[slug] = (here or paths or [slug])[0]
+    for t in out:
+        t["project"] = where[t["slug"]]
+        t["project_exists"] = os.path.isdir(t["project"])
+    tips = collect_tips(root)
+    for slug in {t["slug"] for t in tips if t["slug"] != GLOBAL} - set(where):
+        where[slug] = slug
+    for slug, path in where.items():
+        names[path] = {"name": project_name(slug), "desc": describe(root, slug)}
     return {"root": root, "home": os.path.expanduser("~"), "version": VERSION, "tasks": out,
-            "tips": collect_tips(root)}
+            "tips": tips, "projects": names}
+
+
+def project_name(slug):
+    """Display name of a key: q1~api -> q1/api; empty for an old path key
+    (home~code~app), which is shown by its path."""
+    if slug in ("home", "root") or slug.startswith(("home~", "root~")):
+        return ""
+    return slug.replace("~", "/")
+
+
+def describe(root, slug):
+    """The project's description (_project.md, written by `handoff.sh describe`)."""
+    try:
+        with open(os.path.join(root, slug, DESC), encoding="utf-8", errors="replace") as fh:
+            return " ".join(fh.read().split())[:GOAL_MAX]
+    except OSError:
+        return ""
 
 
 # --- tips (files written by skills/handoff/tips.sh) ---------------------------
@@ -717,7 +766,7 @@ def service_path(kind):
 
 
 def service_env():
-    return {k: os.environ[k] for k in ("HANDOFF_ROOT", "CLAUDE_CONFIG_DIR", "HANDOFF_PORT") if os.environ.get(k)}
+    return {k: os.environ[k] for k in ("HANDOFF_ROOT", "XDG_DATA_HOME", "HANDOFF_PORT") if os.environ.get(k)}
 
 
 def systemd_quote(s):
@@ -1690,7 +1739,9 @@ function whoNode(avatar, name, sub, title) {
 }
 // The parent dir of a project, shown next to its name ("~/Projects").
 function parentOf(project) {
-  const full = tilde(project), name = projectName(project);
+  const desc = projectDesc(project);
+  if (desc) return desc;
+  const full = tilde(project), name = base(full) || full;
   return full === "~" ? "home" : full.slice(0, full.length - name.length).replace(/\/$/, "") || "/";
 }
 const projectWho = (project) => () => whoNode(initials(projectName(project)), projectName(project), parentOf(project), project);
@@ -1898,9 +1949,12 @@ function initials(name) {
 }
 
 function projectName(p) {
+  const info = data && data.projects && data.projects[p];
+  if (info && info.name) return info.name;
   const t = tilde(p);
   return t === "~" ? "~" : base(t) || t;
 }
+const projectDesc = (p) => (data && data.projects && data.projects[p] || {}).desc || "";
 
 // The sidebar pick: "all", a project or GLOBAL; kept in the URL hash
 // ("#global-tips", "#<project path>", none for All) so a reload keeps it.

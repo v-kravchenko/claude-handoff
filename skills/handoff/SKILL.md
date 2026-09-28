@@ -15,7 +15,8 @@ git, so spend words on intent, decisions, dead ends and what to do next.
 ## Context
 
 Metadata (copy verbatim into the frontmatter; `dir` comes from the shell cwd,
-so if the work clearly happened elsewhere, replace it with the real work dir):
+so if the work clearly happened elsewhere, replace it with the real work dir,
+relative to the project directory like the printed one):
 
 ```!
 ${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" meta
@@ -27,7 +28,8 @@ Git state:
 ${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" git
 ```
 
-Tasks in this project (`@task | title | last saved`, then archived ones):
+The project (its name and description), then its tasks
+(`@task | title | last saved`, then archived ones):
 
 ```!
 ${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" tasks
@@ -85,6 +87,9 @@ Run each `handoff.sh` command in its own Bash call, exactly as written: no
    - don't repeat what CLAUDE.md or memory already says (environment facts,
      user preferences);
    - nothing one-off: usage limits, CI run IDs, "this session only resumed";
+   - paths: inside the project directory relative to it (`src/app.ts:12`,
+     not an absolute path), elsewhere under the home directory with `~/`;
+     the project may be opened from another path or machine;
    - other tasks: refer to them as `@task`, without describing their state;
    - environment facts from an earlier handoff: keep only those confirmed in
      this session;
@@ -94,7 +99,9 @@ Run each `handoff.sh` command in its own Bash call, exactly as written: no
      code, paths and technical terms as they are.
 7. Never include secrets (tokens, passwords, keys, credentials) — reference
    where they live instead.
-8. Write the file with the Write tool to the `file` path from step 3.
+8. Write the file with the Write tool to the `file` path from step 3. The
+   frontmatter is YAML: keep `title` in double quotes (it may contain `: `)
+   and write a `"` inside it as `\"`.
 9. Save tips, only if the Context says `tips: on`: follow "Saving tips" there,
    where `tips` means `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" tips`.
 10. Run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" prune <task>` to keep only recent handoffs.
@@ -128,7 +135,7 @@ resumed (the parent) and saves both, so each continues in its own session.
 task: <task from step 3>
 from: <parent task, without @; only for a fork>
 session: ${CLAUDE_SESSION_ID}
-title: <short task name>
+title: "<short task name>"
 ---
 
 # <title>

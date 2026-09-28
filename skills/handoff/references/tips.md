@@ -22,6 +22,8 @@ Below, `tips` means the `tips` command from step 9.
 4. Add: `tips new <id> <project|global>` (id: a short lowercase slug) prints
    `file`, `env` and `source`; on `EXISTS`, pick another id or update that tip.
    Write the file with the Write tool from the tip template below, in English.
+   The frontmatter is YAML: keep `title` and `when` in double quotes and
+   `keywords` in `[...]`, and write a `"` inside a quoted value as `\"`.
    `keywords` decide whether the tip is found: exact error messages (quoted),
    commands, tools, file names, synonyms, and Ukrainian words if the topic was
    discussed in Ukrainian.
@@ -32,9 +34,9 @@ Below, `tips` means the `tips` command from step 9.
 
 ```markdown
 ---
-title: <one line: the rule>
-when: <the situation where it applies>
-keywords: <comma-separated; exact error messages in quotes>
+title: "<one line: the rule>"
+when: "<the situation where it applies>"
+keywords: [<comma-separated; exact error messages and any item with `: `, `,` or `#` in "double quotes">]
 env: <only if environment-specific: the value from `tips new`>
 cites: <optional: path[:line]@commit, comma-separated>
 origin: <failure | discovery | user | web>

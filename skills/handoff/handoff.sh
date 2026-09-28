@@ -3,36 +3,41 @@
 #
 # Handoffs are keyed by the session's project directory (pass
 # ${CLAUDE_PROJECT_DIR}; the shell cwd drifts with `cd`) and a task slug:
-#   $HANDOFF_ROOT/<project-slug>/<task>/YYYY-MM-DD_HHMMSS.md
-#   (slug: home~code~app for $HOME/code/app, root~srv~x for /srv/x)
-#   $HANDOFF_ROOT/<project-slug>/_archive/<task>/...   (finished tasks)
-# Inside git the project key is the main repo root, so worktrees share it.
+#   $HANDOFF_ROOT/<project>/<task>/YYYY-MM-DD_HHMMSS.md
+#   $HANDOFF_ROOT/<project>/_archive/<task>/...   (finished tasks)
+#   $HANDOFF_ROOT/<project>/_project.md           (description, optional)
+# <project> is the directory's name (lowercased, a-z0-9._- only), wherever the
+# directory is: ~/x/app and /srv/app are the same project `app`. A project
+# created with `describe --parent` is <parent>~<name> (x~app) and wins over
+# <name> for directories named like that.
 # Git metadata in the handoff comes from the cwd at save time (where the work
 # happened), which may be a nested repo inside the project.
 # Always exits 0: skill `!` injections abort on failure.
 # Portable: bash 3.2+ (macOS), GNU and BSD userland, git 2.31+.
 set -uo pipefail
 
-ROOT="${HANDOFF_ROOT:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/handoffs}"
+ROOT="${HANDOFF_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-handoff}"
 KEEP="${HANDOFF_KEEP:-10}"
 [[ $KEEP =~ ^[1-9][0-9]*$ ]] || KEEP=10
 ARCHIVE=_archive
+DESC=_project.md
 PROJECT=${1:-}
 CMD=${2:-}
 WORKDIR=$(pwd -P)
 
-# $HOME/x/y -> home~x~y, $HOME -> home, /x/y -> root~x~y, / -> root.
-# One-to-one: % and ~ in names become %25 and %7E.
-slug() {
-  local p=$1 base=root
-  case $p in
-    "$HOME") p="" base=home ;;
-    "$HOME"/*) p=${p#"$HOME"} base=home ;;
-    /) p="" ;;
-  esac
-  printf '%s%s\n' "$base" "$(printf '%s' "$p" | sed 's/%/%25/g; s/~/%7E/g' | tr / '~')"
+# Directory name -> project name: lowercase, a-z0-9._- (runs of anything else
+# become one -), no leading . _ or -; `root` for /.
+name_of() {
+  local n
+  n=$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' |
+    LC_ALL=C sed -e 's/[^a-z0-9._-]/-/g' -e 's/--*/-/g' -e 's/^[._-]*//')
+  echo "${n:-root}"
 }
-field() { sed -n "s/^$1: //p" "$2" | head -n 1 | tr -d '\r'; }
+# Frontmatter value of KEY; a YAML "double" or 'single' quoted one unquoted.
+field() { sed -n "s/^$1: //p" "$2" | head -n 1 | tr -d '\r' | unquote; }
+unquote() {
+  sed -e '/^".*"$/{s/^"//;s/"$//;s/\\"/"/g;s/\\\\/\\/g;}' -e "/^'.*'\$/{s/^'//;s/'\$//;s/''/'/g;}"
+}
 
 in_git() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 
@@ -50,12 +55,50 @@ branch() {
 # Cached in KEY: the dispatch below calls key once in the main shell, since
 # $(key) runs in a subshell and could not keep the value.
 key() {
-  [[ -n ${KEY:-} ]] || KEY=$(
+  [[ -n ${KEY:-} ]] || KEY=$ROOT/$(
     cd "$PROJECT" || exit
-    if in_git; then base=$(repo_root); else base=$(pwd -P); fi
-    echo "$ROOT/$(slug "$base")"
+    d=$(pwd -P) n=$(name_of "${d##*/}")
+    p=${d%/*}; p=${p##*/}
+    if [[ -n $p ]] && p=$(name_of "$p") && [[ -d $ROOT/$p~$n ]]; then echo "$p~$n"; else echo "$n"; fi
   )
   echo "$KEY"
+}
+
+# Absolute path of the project dir.
+project_dir() { (cd "$PROJECT" && pwd -P); }
+
+# Path for a handoff: relative inside the project (`.` for the project
+# itself), ~/... under $HOME, else absolute.
+# shellcheck disable=SC2088  # a literal ~/ is written to the handoff
+relpath() {
+  local p=$1 pd; pd=$(project_dir)
+  case $p in
+    "$pd") echo . ;;
+    "$pd"/*) echo "${p#"$pd"/}" ;;
+    "$HOME") echo "~" ;;
+    "$HOME"/*) echo "~/${p#"$HOME"/}" ;;
+    *) echo "$p" ;;
+  esac
+}
+
+# A path from a handoff (see relpath) -> absolute. PROJECT_WAS is the
+# handoff's `project:`; an old absolute path under it follows the project
+# when it has moved.
+# shellcheck disable=SC2088  # a literal ~/ read from the handoff
+abspath() {
+  local p=$1 pd was=${2:-}; pd=$(project_dir)
+  case $p in
+    .) echo "$pd" ;;
+    "~") echo "$HOME" ;;
+    "~/"*) echo "$HOME/${p#"~/"}" ;;
+    /*)
+      if [[ ! -e $p && -n $was && ($p == "$was" || $p == "$was"/*) ]]; then
+        echo "$pd${p#"$was"}"
+      else
+        echo "$p"
+      fi ;;
+    *) echo "$pd/$p" ;;
+  esac
 }
 
 valid_task() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]*$ && $1 != "$ARCHIVE" ]]; }
@@ -124,10 +167,11 @@ resolve() {
 }
 
 cmd_meta() {
-  echo "project: $(cd "$PROJECT" && pwd -P)"
-  echo "dir: $WORKDIR"
+  echo "project: $(project_dir)"
+  echo "host: $(hostname 2>/dev/null || uname -n)"
+  echo "dir: $(relpath "$WORKDIR")"
   if in_git; then
-    echo "repo: $(repo_root)"
+    echo "repo: $(relpath "$(repo_root)")"
     echo "branch: $(branch)"
     echo "commit: $(git rev-parse -q --verify HEAD 2>/dev/null || echo none)"
   else
@@ -205,6 +249,7 @@ cmd_stale() (
   created=$(field created "$f")
   dir=$(field repo "$f")
   [[ -z $dir || $dir == none ]] && dir=$(field dir "$f")
+  [[ -n $dir ]] && dir=$(abspath "$dir" "$(field project "$f")")
   echo "## staleness"
   echo "created: ${created:-unknown}"
   if [[ -n $created ]]; then
@@ -264,7 +309,7 @@ cmd_show() {
   else
     local names; names=$(task_names)
     if [[ -z $names ]]; then
-      echo "NO HANDOFF for project=$(cd "$PROJECT" && pwd -P) ($(key))"
+      echo "NO HANDOFF for project=$(project_dir) ($(key))"
       return
     fi
     if [[ $(wc -l <<<"$names") -gt 1 ]]; then
@@ -277,6 +322,7 @@ cmd_show() {
   t=$(basename "$(dirname "$f")")
   echo "file: $f"
   echo "task: $t"
+  project_line
   local from list; from=$(field from "$f")
   valid_task "$from" && echo "fork of: @$from ($(task_status "$from"))"
   echo
@@ -292,10 +338,51 @@ cmd_show() {
   cat "$f"
 }
 
+# Project line: `project: @name — description`.
+project_line() {
+  local d
+  d=$(desc_text)
+  echo "project: @${KEY#"$ROOT"/}${d:+ — $d}"
+}
+desc_text() { [[ -f $KEY/$DESC ]] && tr '\r\n' '  ' <"$KEY/$DESC" | sed 's/  *$//'; }
+
+# describe [--parent|--no-parent] [TEXT]: prints or sets the project's
+# description. --parent makes <parent>~<name> this directory's project (a new
+# one; <name> stays as it is); --no-parent renames it back to <name>.
+cmd_describe() {
+  local mode="" d n p
+  case ${1:-} in --parent|--no-parent) mode=$1; shift ;; esac
+  d=$(project_dir) n=$(name_of "${d##*/}") p=${d%/*}; p=${p##*/}
+  case $mode in
+    --parent)
+      [[ -n $p ]] || { echo "NO PARENT: $d"; return; }
+      p=$(name_of "$p")
+      if [[ $KEY != "$ROOT/$p~$n" ]]; then
+        mkdir -p "$ROOT/$p~$n" || return
+        KEY=$ROOT/$p~$n TIPS_SLUG=""
+        echo "note: project is now @$p~$n; @$n is kept as it was"
+      fi ;;
+    --no-parent)
+      if [[ $KEY == "$ROOT/$n" ]]; then :
+      elif [[ -e $ROOT/$n || -e $TIPS_ROOT/$n ]]; then
+        echo "EXISTS: @$n; merge or remove it by hand first"; return
+      else
+        mv -- "$KEY" "$ROOT/$n" || return
+        [[ -d $TIPS_ROOT/${KEY##*/} ]] && mv -- "$TIPS_ROOT/${KEY##*/}" "$TIPS_ROOT/$n"
+        echo "note: project @${KEY##*/} renamed to @$n"
+        KEY=$ROOT/$n TIPS_SLUG=""
+      fi ;;
+  esac
+  if (($#)); then
+    mkdir -p "$KEY" && printf '%s\n' "$*" >"$KEY/$DESC.tmp" && mv -- "$KEY/$DESC.tmp" "$KEY/$DESC"
+  fi
+  project_line
+}
+
 # shellcheck source=SCRIPTDIR/tips.sh
 . "$(dirname "${BASH_SOURCE[0]}")/tips.sh"
 
-USAGE="usage: handoff.sh PROJECT_DIR meta|git|tasks|new TASK|prune TASK|done TASK|restore TASK|stale FILE|show [@TASK|FILE]|tips ..."
+USAGE="usage: handoff.sh PROJECT_DIR meta|git|tasks|describe [--parent|--no-parent] [TEXT]|new TASK|prune TASK|done TASK|restore TASK|stale FILE|show [@TASK|FILE]|tips ..."
 
 if [[ -z $PROJECT || ! -d $PROJECT ]]; then
   echo "$USAGE"
@@ -312,7 +399,8 @@ esac
 case "$CMD" in
   meta) cmd_meta ;;
   git) cmd_git ;;
-  tasks) cmd_tasks all ;;
+  tasks) project_line; cmd_tasks all ;;
+  describe) shift 2; cmd_describe "$@" ;;
   new) cmd_new "${3:-}" ;;
   prune) cmd_prune "${3:-}" ;;
   done) cmd_done "${3:-}" ;;

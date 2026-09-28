@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # Tips: short unverified hints saved by /handoff and searched on demand.
 # Sourced by handoff.sh (uses ROOT, PROJECT, key, in_git, repo_root, valid_task).
-#   $HANDOFF_ROOT/_tips/<project-slug>/<id>.md   project tips
-#   $HANDOFF_ROOT/_tips/_global/<id>.md          global tips (this machine)
+#   $HANDOFF_ROOT/_tips/<project>/<id>.md   project tips
+#   $HANDOFF_ROOT/_tips/_global/<id>.md          global tips
 #   $HANDOFF_ROOT/_tips/log.jsonl                search/show/verify events (+ log.1.jsonl); the dashboard counts them
 # Tips live outside project dirs: every subdir of a project dir is a task.
 # The file name is the tip id. Search sees the current project and global only.
@@ -13,7 +13,7 @@ TIPS_MAX=5
 SKILLS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 TIPS_GUIDE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/references/tips.md"
 
-# The project slug costs a few git calls; it is computed once (see key).
+# The project key is computed once (see key).
 tips_init() { [[ -n ${TIPS_SLUG:-} ]] || { key >/dev/null; TIPS_SLUG=$(basename "$KEY"); }; }
 tips_pdir() { tips_init; echo "$TIPS_ROOT/$TIPS_SLUG"; }
 tips_gdir() { echo "$TIPS_ROOT/$GLOBAL"; }
@@ -66,12 +66,18 @@ tips_log() {
 }
 
 # set_field FILE KEY VALUE: replaces KEY in the frontmatter or adds it.
-# VALUE goes through ENVIRON: awk -v would expand backslash escapes.
+# VALUE goes through ENVIRON: awk -v would expand backslash escapes. It is
+# written in YAML double quotes when it would not be a valid plain scalar.
 # A CRLF file is rewritten with LF.
 set_field() {
   local tmp="$1.tmp.$$"
   TIPS_V=$3 awk -v k="$2" '
-    BEGIN { v = ENVIRON["TIPS_V"]; gsub(/[\r\n]+/, " ", v) }
+    BEGIN {
+      v = ENVIRON["TIPS_V"]; gsub(/[\r\n]+/, " ", v)
+      if (index(v, ": ") || index(v, " #") || substr(v, length(v)) == ":" || index("-?:,[]{}#&*!|>\047\"%@`", substr(v, 1, 1))) {
+        gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); v = "\"" v "\""
+      }
+    }
     { sub(/\r$/, "") }
     NR == 1 && $0 == "---" { fm = 1; print; next }
     fm && $0 == "---" { if (!done) print k ": " v; fm = 0; print; next }
@@ -130,12 +136,27 @@ tips_score() {
       while (j > 1 && index(CONT, c)) c = substr(s, --j, 1)
       return index(LEAD, c) > 0
     }
+    # A YAML double- or single-quoted value, unquoted (substr, not .*: see above).
+    function unq(v,   a, z, sq) {
+      a = substr(v, 1, 1); z = substr(v, length(v), 1); sq = sprintf("%c", 39)
+      if (length(v) < 2 || a != z || (a != "\"" && a != sq)) return v
+      v = substr(v, 2, length(v) - 2)
+      if (a == sq) gsub(sq sq, sq, v)
+      else { gsub(/\\"/, "\"", v); gsub(/\\\\/, "\\", v) }
+      return v
+    }
+    # keywords: a list in [brackets] loses them (the old form has none).
+    function unlist(v) {
+      if (substr(v, 1, 1) == "[" && substr(v, length(v), 1) == "]") v = substr(v, 2, length(v) - 2)
+      return v
+    }
     # Splits keywords on commas outside double quotes; drops the quotes.
     function splitkw(s, a,   n, i, c, cur, inq) {
       n = 0; cur = ""; inq = 0
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
-        if (c == "\"") inq = !inq
+        if (c == "\\" && substr(s, i + 1, 1) == "\"") { cur = cur "\""; i++ }  # \" in a YAML item
+        else if (c == "\"") inq = !inq
         else if (c == "," && !inq) { a[++n] = cur; cur = "" }
         else cur = cur c
       }
@@ -195,7 +216,7 @@ tips_score() {
     FNR == 1 { flush(); fname = FILENAME; fm = 0; body = ""; split("", F) }
     FNR == 1 && $0 == "---" { fm = 1; next }
     fm && $0 == "---" { fm = 0; next }
-    fm { c = index($0, ":"); k = c ? substr($0, 1, c - 1) : $0; v = c ? substr($0, c + 1) : ""; sub(/^ +/, "", v); F[k] = v; next }  # no .* : Termux gawk in C skips UTF-8 bytes
+    fm { c = index($0, ":"); k = c ? substr($0, 1, c - 1) : $0; v = c ? substr($0, c + 1) : ""; sub(/^ +/, "", v); F[k] = k == "keywords" ? unlist(v) : unq(v); next }  # no .* : Termux gawk in C skips UTF-8 bytes
     { body = body " " $0 }
     END { flush() }' "${files[@]}" |
     sort -t "$(printf '\t')" -k1,1nr -k3,3 |
