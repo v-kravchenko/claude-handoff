@@ -1185,8 +1185,9 @@ footer a:hover { color: var(--accent); text-decoration: underline; }
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
-const state = { q: "", archOpen: [], tab: {}, open: null,
-  globalOpen: localStorage.getItem("handoffs.globalOpen") === "1" };  // Global tips start collapsed  // open: key of the item in the panel
+const state = { q: "", archOpen: [], tab: {}, open: null, globalOpen: false };  // open: key of the item in the panel
+// Global tips start collapsed on every load; drop the state 1.4.0 and older kept.
+try { localStorage.removeItem("handoffs.globalOpen"); } catch (e) { /* private mode */ }
 let data = null;
 let hits = new Map();  // full-text search: task key -> snippet
 const LABEL = "Copy";
@@ -2006,7 +2007,6 @@ function render() {
     head.setAttribute("aria-expanded", String(open));
     const toggle = () => {
       state.globalOpen = !state.globalOpen;
-      localStorage.setItem("handoffs.globalOpen", state.globalOpen ? "1" : "0");
       render();
     };
     head.addEventListener("click", toggle);

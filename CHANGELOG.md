@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Dashboard: Global tips start collapsed on every load; the open state is
+  no longer kept in the browser (once opened, they used to stay open).
+
 ## [1.4.0] - 2026-09-28
 
 ### Added
