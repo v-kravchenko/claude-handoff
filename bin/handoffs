@@ -31,7 +31,7 @@ import time
 import urllib.parse
 import webbrowser
 
-VERSION = "1.4.2"
+VERSION = "1.4.3"
 ARCHIVE = "_archive"
 TIPS = "_tips"  # tips store (skills/handoff/tips.sh), not a project
 GOAL_MAX = 200

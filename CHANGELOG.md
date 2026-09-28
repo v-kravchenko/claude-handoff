@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-09-28
+
+### Fixed
+
+- Tips on Termux: search and the hooks found nothing, because Termux gawk
+  in the C locale aborts on UTF-8 bytes in a regex group (`unbalanced (`)
+  and its `.` does not match them, which broke front matter lines with
+  Cyrillic. The stop words and the front matter no longer use such regexes.
+
 ## [1.4.2] - 2026-09-28
 
 ### Changed
@@ -290,6 +299,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.4.3]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/v-kravchenko/claude-handoff/compare/v1.3.1...v1.4.0
