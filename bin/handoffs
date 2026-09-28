@@ -24,6 +24,7 @@ import secrets
 import signal
 import shutil
 import socket
+import socketserver
 import subprocess
 import sys
 import time
@@ -562,6 +563,12 @@ def make_server(host, port):
         allow_reuse_address = os.name != "nt"  # on Windows it lets two servers share a port
         daemon_threads = True
 
+        def server_bind(self):
+            # HTTPServer.server_bind calls socket.getfqdn(), which can take
+            # seconds (reverse DNS on macOS); the name is never used here.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name, self.server_port = self.server_address[:2]
+
     last = None
     for p in range(port, port + PORT_TRIES) if port else [0]:
         try:
@@ -644,7 +651,7 @@ def start_background(argv, no_open):
                                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                 start_new_session=True)
     url = ""
-    for _ in range(100):  # up to 5 s
+    for _ in range(300):  # up to 15 s
         try:
             with open(log, encoding="utf-8") as fh:
                 m = re.search(r"^handoffs: (\S+)", fh.read(), re.M)
