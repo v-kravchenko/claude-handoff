@@ -54,7 +54,7 @@ Arguments: $ARGUMENTS
 3. Run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" new <task>`. It
    prints the target `file`, the `task` for the frontmatter and the task's
    `latest` handoff. If it prints a `note:` about an archived task, mention it
-   (with the restore command) in your final reply.
+   (with how to restore it) in your final reply.
 4. If `latest` is not empty and that handoff is not in this conversation (the
    session did not start with `/pickup` of this task, or the context was
    compacted), read it. Carry over only open decisions, rejected alternatives

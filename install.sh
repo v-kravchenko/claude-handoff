@@ -9,12 +9,20 @@
 #              ~/.claude/settings.json (needs python3).
 # Declining a part that is installed removes it.
 # Usage: ./install.sh [--dashboard|--no-dashboard] [--tips|--no-tips] | --uninstall
-# Without a terminal and without flags, the previous choices are kept
-# (skills/handoff/install.conf; a fresh install gets the dashboard, not tips).
+#    or: curl -fsSL https://raw.githubusercontent.com/v-kravchenko/claude-handoff/main/install.sh | bash [-s -- FLAGS]
+# Outside a clone (piped from curl) it fetches the repository into a temp dir
+# (HANDOFF_REPO, HANDOFF_REF: a branch or tag), runs its install.sh and
+# deletes the copy; --uninstall needs no copy.
+# The questions default to the previous choices. Without a terminal and
+# without flags, the previous choices are kept (skills/handoff/install.conf;
+# a fresh install gets the dashboard, not tips).
 # Saved handoffs and tips (~/.claude/handoffs) are never touched.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")" && pwd -P)"
+# Empty when the script is piped into bash.
+SELF=${BASH_SOURCE[0]:-}
+REPO=""
+[[ -n $SELF && -f $SELF ]] && REPO="$(cd "$(dirname "$SELF")" && pwd -P)"
 SRC="$REPO/skills"
 # Not under skills/: the plugin (which loads skills/) ships only handoff and pickup.
 EXTRAS="$REPO/extras"
@@ -45,11 +53,18 @@ ask() {
   case $a in [yY]*) echo y ;; [nN]*) echo n ;; *) echo "$2" ;; esac
 }
 
-# install_skill NAME [SOURCE_DIR]
+# install_skill NAME [SOURCE_DIR]: copies next to DEST, then swaps the
+# directories, so an interrupted install never leaves the skill missing.
+# install.conf (in the handoff skill) moves over with it.
 install_skill() {
+  local new="$CFG/.claude-handoff-new" old="$CFG/.claude-handoff-old"
   if [[ -d $DEST/$1 ]]; then echo "updating $DEST/$1"; else echo "installing $DEST/$1"; fi
-  rm -rf "${DEST:?}/$1"
-  cp -R "${2:-$SRC}/$1" "$DEST/$1"
+  rm -rf "$new" "$old"
+  cp -R "${2:-$SRC}/$1" "$new"
+  [[ -f $DEST/$1/install.conf ]] && cp "$DEST/$1/install.conf" "$new/"
+  if [[ -e $DEST/$1 ]]; then mv "$DEST/$1" "$old"; fi
+  mv "$new" "$DEST/$1"
+  rm -rf "$old"
 }
 
 remove_skill() {
@@ -231,49 +246,82 @@ prev() {
   sed -n "s/^$1=\([yn]\)\$/\1/p" "$CONF" | head -n 1
 }
 
-dashboard="" tips="" uninstall=0
-for arg in "$@"; do
-  case $arg in
-    --dashboard) dashboard=y ;;
-    --no-dashboard) dashboard=n ;;
-    --tips) tips=y ;;
-    --no-tips) tips=n ;;
-    --uninstall) uninstall=1 ;;
-    *) echo "usage: $0 [--dashboard|--no-dashboard] [--tips|--no-tips] | --uninstall" >&2; exit 2 ;;
-  esac
-done
-
-if ((uninstall)); then
-  for s in "${SKILLS[@]}"; do remove_skill "$s"; done
-  remove_tips
-  remove_dashboard
-  echo "done: saved handoffs and tips were kept (${HANDOFF_ROOT:-$CFG/handoffs})"
-  exit 0
-fi
-
-[[ -f $SRC/handoff/handoff.sh ]] || { echo "error: run from a clone of the repository" >&2; exit 1; }
-if [[ -t 0 ]]; then
-  [[ -n $dashboard ]] || dashboard=$(ask "Install the \`$DASH\` web dashboard?" y)
-  [[ -n $tips ]] || tips=$(ask "Install tips (/tips skill, a block in $MD, hooks in $SETTINGS)?" y)
-else
-  # Before install.conf existed, the dashboard was always installed.
-  [[ -n $dashboard ]] || dashboard=$(prev dashboard)
-  [[ -n $dashboard ]] || dashboard=y
-  if [[ -z $tips ]]; then
-    tips=$(prev tips)
-    [[ -n $tips ]] || { tips=n; [[ -d $DEST/tips ]] && ! foreign_tips && tips=y; }
-    [[ $tips == n ]] && echo "note: tips are not installed; rerun with --tips to add them"
+# bootstrap ARGS: fetches the repository into a temp dir and runs its
+# install.sh with ARGS (questions go to the terminal, if there is one).
+bootstrap() {
+  local url=${HANDOFF_REPO:-https://github.com/v-kravchenko/claude-handoff} ref=${HANDOFF_REF:-main} src
+  TMP_REPO=$(mktemp -d "${TMPDIR:-/tmp}/claude-handoff.XXXXXX")
+  trap 'rm -rf "$TMP_REPO"' EXIT
+  src=$TMP_REPO/claude-handoff
+  echo "fetching $url ($ref)"
+  if command -v git >/dev/null 2>&1; then
+    git clone -q --depth 1 --branch "$ref" "$url" "$src"
+  else
+    mkdir -p "$src"
+    curl -fsSL "$url/archive/$ref.tar.gz" | tar -xzf - -C "$src" --strip-components 1
+  fi || { echo "error: cannot fetch $url ($ref)" >&2; exit 1; }
+  [[ -f $src/install.sh && -f $src/skills/handoff/handoff.sh ]] ||
+    { echo "error: $url ($ref) has no install.sh" >&2; exit 1; }
+  if { : </dev/tty; } 2>/dev/null; then
+    bash "$src/install.sh" "$@" </dev/tty
+  else
+    bash "$src/install.sh" "$@" </dev/null
   fi
-fi
+}
 
-mkdir -p "$DEST"
-for s in "${SKILLS[@]}"; do install_skill "$s"; done
-chmod +x "$DEST/handoff/handoff.sh"
-if [[ $dashboard == y ]]; then install_dashboard; else remove_dashboard; fi
-if [[ $tips == y ]]; then install_tips; else remove_tips; fi
-printf 'dashboard=%s\ntips=%s\n' "$dashboard" "$tips" >"$CONF"
+main() {
+  local dashboard="" tips="" uninstall=0 arg s
+  for arg in "$@"; do
+    case $arg in
+      --dashboard) dashboard=y ;;
+      --no-dashboard) dashboard=n ;;
+      --tips) tips=y ;;
+      --no-tips) tips=n ;;
+      --uninstall) uninstall=1 ;;
+      *) echo "usage: install.sh [--dashboard|--no-dashboard] [--tips|--no-tips] | --uninstall" >&2; exit 2 ;;
+    esac
+  done
 
-echo "done: restart Claude Code (or start a new session), then use /handoff and /pickup"
-[[ $tips == y ]] && echo "      and /tips"
-[[ $dashboard == y ]] && echo "      run \`$DASH\` for the dashboard"
-exit 0
+  if ((uninstall)); then
+    for s in "${SKILLS[@]}"; do remove_skill "$s"; done
+    remove_tips
+    remove_dashboard
+    echo "done: saved handoffs and tips were kept (${HANDOFF_ROOT:-$CFG/handoffs})"
+    exit 0
+  fi
+
+  if [[ -z $REPO || ! -f $SRC/handoff/handoff.sh ]]; then
+    bootstrap "$@"
+    exit
+  fi
+  if [[ -t 0 ]]; then
+    local d t
+    d=$(prev dashboard) t=$(prev tips)
+    [[ -n $dashboard ]] || dashboard=$(ask "Install the \`$DASH\` web dashboard?" "${d:-y}")
+    [[ -n $tips ]] || tips=$(ask "Install tips (/tips skill, a block in $MD, hooks in $SETTINGS)?" "${t:-y}")
+  else
+    # Before install.conf existed, the dashboard was always installed.
+    [[ -n $dashboard ]] || dashboard=$(prev dashboard)
+    [[ -n $dashboard ]] || dashboard=y
+    if [[ -z $tips ]]; then
+      tips=$(prev tips)
+      [[ -n $tips ]] || { tips=n; [[ -d $DEST/tips ]] && ! foreign_tips && tips=y; }
+      [[ $tips == n ]] && echo "note: tips are not installed; rerun with --tips to add them"
+    fi
+  fi
+
+  mkdir -p "$DEST"
+  for s in "${SKILLS[@]}"; do install_skill "$s"; done
+  chmod +x "$DEST/handoff/handoff.sh"
+  if [[ $dashboard == y ]]; then install_dashboard; else remove_dashboard; fi
+  if [[ $tips == y ]]; then install_tips; else remove_tips; fi
+  printf 'dashboard=%s\ntips=%s\n' "$dashboard" "$tips" >"$CONF"
+
+  echo "done: restart Claude Code (or start a new session), then use /handoff and /pickup"
+  [[ $tips == y ]] && echo "      and /tips"
+  [[ $dashboard == y ]] && echo "      run \`$DASH\` for the dashboard"
+  exit 0
+}
+
+# Last line: a truncated download (curl | bash) runs nothing.
+main "$@"

@@ -43,32 +43,17 @@ machines, or to park a task and come back to it days later.
 
 ## Installation
 
-### As a plugin (recommended)
-
-In Claude Code:
-
-```text
-/plugin marketplace add v-kravchenko/claude-handoff
-/plugin install handoff@claude-handoff
-```
-
-Plugin skills are namespaced, so the commands are **`/handoff:handoff`** and
-**`/handoff:pickup`**. Update with `/plugin marketplace update claude-handoff`.
-The plugin has no [tips](#tips): they need the `/tips` skill, a block in
-`CLAUDE.md` and hooks, so they come only with the personal-skills install.
-
-### As personal skills
-
-This gives you the short commands `/handoff` and `/pickup`:
+### Install script (recommended)
 
 ```bash
-git clone https://github.com/v-kravchenko/claude-handoff.git
-cd claude-handoff
-./install.sh              # copies skills to ~/.claude/skills (respects CLAUDE_CONFIG_DIR)
-                          # and asks about the dashboard and tips
+curl -fsSL https://raw.githubusercontent.com/v-kravchenko/claude-handoff/main/install.sh | bash
 ```
 
-`install.sh` asks two questions:
+This gives you the short commands `/handoff` and `/pickup` and the optional
+dashboard and tips. The script fetches the repository into a temporary
+directory (with git, or as a tarball without it), copies the skills to
+`~/.claude/skills` (respects `CLAUDE_CONFIG_DIR`) and deletes the temporary
+copy. It asks two questions (the defaults are your previous answers):
 
 - **Dashboard**: installs the `handoffs` command (see below).
 - **Tips**: installs the `/tips` skill, adds a marked block to
@@ -85,13 +70,43 @@ Answering no removes a part that is installed. Flags skip the questions:
 and without flags, the previous choices are kept (saved in
 `skills/handoff/install.conf`; a fresh install gets the dashboard, not tips).
 
-To update, run `git pull && ./install.sh`. To remove everything it
-installed (skills, dashboard, the `CLAUDE.md` block and the hooks), run
-`./install.sh --uninstall`; saved handoffs and tips are kept.
+| Task | Command |
+| --- | --- |
+| Install or update | `curl -fsSL https://raw.githubusercontent.com/v-kravchenko/claude-handoff/main/install.sh \| bash` |
+| With flags | `... \| bash -s -- --tips --no-dashboard` |
+| A release | `... \| HANDOFF_REF=v1.2.2 bash` (a branch or tag) |
+| Uninstall | `... \| bash -s -- --uninstall` |
+
+Uninstall removes everything the script installed (skills, dashboard, the
+`CLAUDE.md` block and the hooks); saved handoffs and tips are kept. To read
+the script before running it, download it first:
+`curl -fsSLO https://raw.githubusercontent.com/v-kravchenko/claude-handoff/main/install.sh`,
+then `bash install.sh`.
 
 The dashboard command goes to `~/.local/bin` (`$PREFIX/bin` on Termux); set
-`HANDOFF_BIN_DIR` to choose another directory. Plugin users can run
-`bin/handoffs` from a clone.
+`HANDOFF_BIN_DIR` to choose another directory.
+
+### From a clone
+
+For development, or to keep a checkout: `git clone
+https://github.com/v-kravchenko/claude-handoff.git && cd claude-handoff &&
+./install.sh` (same questions and flags). Update with `git pull &&
+./install.sh`.
+
+### As a plugin
+
+In Claude Code:
+
+```text
+/plugin marketplace add v-kravchenko/claude-handoff
+/plugin install handoff@claude-handoff
+```
+
+Plugin skills are namespaced, so the commands are **`/handoff:handoff`** and
+**`/handoff:pickup`**. Update with `/plugin marketplace update claude-handoff`.
+The plugin has no [tips](#tips) and no dashboard command (run `bin/handoffs`
+from a clone): tips need the `/tips` skill, a block in `CLAUDE.md` and
+hooks, so they come only with the install script.
 
 Start a new Claude Code session after installing.
 
@@ -136,7 +151,7 @@ only when you type them. `/tips` can also be invoked by the agent.
 
 ## Tips
 
-Tips come with `./install.sh --tips` (not with the plugin). Tips are short hints that `/handoff` saves for future sessions: a dead end,
+Tips come with the install script's tips option (`--tips`), not with the plugin. Tips are short hints that `/handoff` saves for future sessions: a dead end,
 a surprise, the fix for an error, a correction you made. They are
 **unverified**: each has a `Verify` step, and the agent is told to run it
 before relying on a tip and to mark the tip `verified` or `refuted`.
@@ -238,7 +253,7 @@ Handoffs are plain Markdown files stored outside your repositories:
 
 ```text
 ~/.claude/handoffs/
-└── <project-slug>/                 # e.g. home~code~app for ~/code/app
+└── <project-slug>/                 # home~code~app for ~/code/app, root~srv~app for /srv/app
     ├── <task>/
     │   ├── 2026-09-25_101500.md
     │   └── 2026-09-26_173557.md    # latest one wins
@@ -277,6 +292,8 @@ archive.
 | `HANDOFF_KEEP` | `10` | Handoffs kept per task (a positive integer; anything else means 10). Older ones are deleted when you save. |
 | `HANDOFF_PORT` | `8765` | Default port of the `handoffs` dashboard. |
 | `HANDOFF_BIN_DIR` | `~/.local/bin` (`$PREFIX/bin` on Termux) | Where `install.sh` puts `handoffs`. |
+| `HANDOFF_REF` | `main` | Branch or tag the piped install script fetches. |
+| `HANDOFF_REPO` | `https://github.com/v-kravchenko/claude-handoff` | Repository the piped install script fetches (a fork or a local `file://` path). |
 
 Set them in your shell profile or in the `env` block of
 `~/.claude/settings.json`.
@@ -334,7 +351,7 @@ HANDOFF_ROOT=$(mktemp -d) skills/handoff/handoff.sh "$PWD" show
 ```
 
 Script commands: `meta`, `git`, `tasks`, `new TASK`, `prune TASK`,
-`done TASK`, `stale FILE`, `show [@TASK|FILE]`, and `tips status|list|search
+`done TASK`, `restore TASK`, `stale FILE`, `show [@TASK|FILE]`, and `tips status|list|search
 [--error] WORDS|show ID|new ID [project|global]|verified ID|refuted ID
 REASON|supersede OLD NEW|move ID global|project|hook|prompt-hook`.
 

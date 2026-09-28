@@ -109,7 +109,6 @@ run "$P" "done" beta
 has "archived: @beta"
 run "$P" show @beta
 has "ARCHIVED: @beta" "archived task is reported"
-has "mv " "archived message includes restore hint"
 run "$P" tasks
 lacks "@beta" "archived task is hidden from the list"
 run "$P" "done" beta
@@ -234,15 +233,10 @@ run "$S" show @spaced
 has "file: $C"
 run "$S" "done" spaced
 run "$S" show @spaced
-restore=$(sed -n 's/^ARCHIVED: .*(restore: \(.*\))$/\1/p' <<<"$OUT")
-assert "restore hint is printed" [ -n "$restore" ]
-bash -c "$restore"
-n=$(find "$K/spaced" -name '*.md' | wc -l | tr -d ' ')
-assert "restore brings back all handoffs (got $n)" [ "$n" -eq 2 ]
-assert "restore removes the archive entry" [ ! -d "$K/_archive/spaced" ]
+has "ARCHIVED: @spaced" "show of an archived task says so"
+lacks "mv " "show prints no shell command to restore"
 
 # --- restore command -----------------------------------------------------
-run "$S" "done" spaced
 run "$S" restore @spaced
 has "restored: @spaced"
 n=$(find "$K/spaced" -name '*.md' | wc -l | tr -d ' ')
@@ -266,6 +260,17 @@ HOME="$TMP/h" run "$TMP/hx" new t
 lacks "$HANDOFF_ROOT/homex" "a sibling of \$HOME is not treated as home"
 HANDOFF_ROOT="$TMP/r2" run / new t
 has "$TMP/r2/root/t/" "the filesystem root maps to root"
+HOME="$TMP/h" run "$TMP/hx" new t
+has "$HANDOFF_ROOT/root$(tr / '~' <<<"$TMP")~hx/t/" "a path outside \$HOME starts with root~"
+mkdir -p "$TMP/h/a~b" "$TMP/h/a/b" "$TMP/h/p%7Eq" "$TMP/h/p~q"
+HOME="$TMP/h" run "$TMP/h/a~b" new t; K1=$OUT
+HOME="$TMP/h" run "$TMP/h/a/b" new t
+assert "a~b and a/b get different keys" [ "$K1" != "$OUT" ]
+has "$HANDOFF_ROOT/home~a~b/t/" "a/b maps to home~a~b"
+HOME="$TMP/h" run "$TMP/h/p%7Eq" new t; K1=$OUT
+HOME="$TMP/h" run "$TMP/h/p~q" new t
+assert "a literal %7E and ~ get different keys" [ "$K1" != "$OUT" ]
+has "$HANDOFF_ROOT/home~p%7Eq/t/" "~ in a name is escaped"
 
 # --- tips ------------------------------------------------------------------
 TP="$TMP/tipsproj"; mkdir -p "$TP"; cd "$TP" || exit 1
@@ -325,6 +330,20 @@ run "$TP" tips search tmp directory missing
 has "no-tmp | global" "search finds a global tip"
 run "$TP" tips search "totally unrelated words"
 has "(no tips match"
+# A tip without status is active; a CRLF tip is read like an LF one.
+PD=$(dirname "$("$SCRIPT" "$TP" tips new probe-dir | sed -n 's/^file: //p')")
+printf -- '---\ntitle: zebra quirk\nkeywords: zebra\n---\nTip: x\n' >"$PD/nostatus.md"
+printf -- '---\r\ntitle: yak quirk\r\nkeywords: yak\r\nstatus: active\r\n---\r\nTip: x\r\n' >"$PD/crlf.md"
+run "$TP" tips search zebra
+has "nostatus | project | zebra quirk" "search finds a tip without status"
+run "$TP" tips list
+has "nostatus | project | active | zebra quirk" "list shows a tip without status as active"
+run "$TP" tips search yak
+has "crlf | project | yak quirk" "search finds a CRLF tip"
+run "$TP" tips verified crlf
+assert "verified updates a CRLF tip" grep -qx 'last_verified: .*' "$PD/crlf.md"
+assert "verified rewrites a CRLF tip with LF" [ "$(grep -c $'\r' "$PD/crlf.md")" = 0 ]
+rm -f "$PD/nostatus.md" "$PD/crlf.md"
 run "$TP" tips search --error "mktemp: failed to create file via template /tmp/x: No such file or directory"
 has "no-tmp" "error mode: a long keyword item matches"
 run "$TP" tips search --error "cannot find module express"
@@ -415,6 +434,18 @@ ph '{"session_id":"p4","prompt":"/tips реліз"}'
 assert "prompt hook skips our slash commands" [ -z "$OUT" ]
 ph '{"prompt":"say \"Реліз\"\nnow"}'
 has "rel (project)" "prompt hook works without a session id and unescapes JSON"
+# The C locale behaves like mawk and macOS awk without a UTF-8 locale.
+phc() { OUT=$(LC_ALL=C TMPDIR="$TMP/ph" "$TS/handoff/handoff.sh" "$TP" tips prompt-hook <<<"$1"); }
+phc '{"session_id":"c1","prompt":"Як ми РЕЛІЗИМО?"}'
+has "rel (project)" "prompt hook lowercases Cyrillic in the C locale"
+phc '{"session_id":"c2","prompt":"перереліз"}'
+assert "prompt hook needs a Cyrillic word start in the C locale" [ -z "$OUT" ]
+phc '{"session_id":"c3","prompt":"«Реліз» завтра"}'
+has "rel (project)" "a quote mark before a word is a word start"
+OUT=$(LC_ALL=C "$SCRIPT" "$TP" tips search "НЕВДАЛИЙ РЕЛІЗ")
+has "rel | project" "search lowercases Cyrillic in the C locale"
+OUT=$(LC_ALL=C "$SCRIPT" "$TP" tips search "релізування")
+has "rel | project" "search cuts long Cyrillic words by characters"
 ph '{"session_id":"p5","prompt":"hello world"}'
 assert "prompt hook is silent without a match" [ -z "$OUT" ]
 ph ''
@@ -732,15 +763,17 @@ EOF
 
   # install.sh puts the command into HANDOFF_BIN_DIR and removes only its own file.
   INST="$(dirname "$DASH")/../install.sh"
-  OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/bin" "$INST" 2>&1)
+  # </dev/null: from a terminal install.sh would ask its questions.
+  OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/bin" "$INST" 2>&1 </dev/null)
   assert "install copies the dashboard" [ -x "$TMP/bin/handoffs" ]
   assert "install copies the skills" [ -f "$TMP/cfg/skills/handoff/handoff.sh" ]
+  assert "install leaves no temp dirs" [ -z "$(ls -d "$TMP/cfg"/.claude-handoff-* 2>/dev/null)" ]
   OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/bin" "$INST" --uninstall 2>&1)
   assert "uninstall removes the dashboard" [ ! -e "$TMP/bin/handoffs" ]
   echo "#!/bin/sh" >"$TMP/bin/handoffs"
   OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/bin" "$INST" --uninstall 2>&1)
   assert "uninstall keeps a foreign handoffs command" [ -f "$TMP/bin/handoffs" ]
-  OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/bin" "$INST" 2>&1)
+  OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/bin" "$INST" 2>&1 </dev/null)
   has "is not ours; skipped" "install warns about a foreign handoffs command"
   assert "install keeps a foreign handoffs command" grep -qx '#!/bin/sh' "$TMP/bin/handoffs"
 
@@ -833,8 +866,41 @@ EOF
   inst --no-dashboard --tips; inst
   assert "install.conf keeps a declined dashboard" [ ! -e "$TMP/ibin/handoffs" ]
   assert "install.conf keeps tips" [ -f "$IC/skills/tips/SKILL.md" ]
+  printf 'old\n' >"$IC/skills/handoff/stale"; inst
+  assert "reinstall drops files no longer shipped" [ ! -e "$IC/skills/handoff/stale" ]
+  assert "reinstall keeps install.conf" [ -f "$IC/skills/handoff/install.conf" ]
   rm -f "$IC/skills/handoff/install.conf"; inst
   assert "an install without install.conf gets the dashboard" [ -x "$TMP/ibin/handoffs" ]
+fi
+
+# One-line install: install.sh piped into bash fetches a copy of the
+# repository (here a local fixture repo), installs from it and deletes it.
+if command -v git >/dev/null 2>&1; then
+  INST="$(dirname "$SCRIPT")/../../install.sh"
+  SRC="$TMP/src"; BT="$TMP/btmp"; BC="$TMP/bcfg"
+  mkdir -p "$SRC" "$BT"
+  cp -R "$(dirname "$INST")"/{install.sh,skills,extras,bin} "$SRC"/
+  git -C "$SRC" init -q && git -C "$SRC" checkout -q -b rel && git -C "$SRC" add -A && git -C "$SRC" commit -qm fixture
+  # pipe VAR=VALUE... -- FLAGS: runs `cat install.sh | bash -s -- FLAGS` outside the repository.
+  pipe() {
+    local envs=()
+    while [[ $1 != -- ]]; do envs+=("$1"); shift; done; shift
+    OUT=$(cd "$TMP" && env "${envs[@]}" CLAUDE_CONFIG_DIR="$BC" HANDOFF_BIN_DIR="$TMP/bbin" TMPDIR="$BT" \
+      HANDOFF_REPO="file://$SRC" bash -s -- "$@" <"$INST" 2>&1)
+  }
+  pipe HANDOFF_REF=rel -- --no-dashboard --tips
+  has "fetching file://$SRC (rel)" "piped install fetches the repository"
+  assert "piped install copies the skills" [ -f "$BC/skills/handoff/handoff.sh" ]
+  assert "piped install passes --tips" [ -f "$BC/skills/tips/SKILL.md" ]
+  assert "piped install passes --no-dashboard" [ ! -e "$TMP/bbin/handoffs" ]
+  assert "piped install deletes its copy" [ -z "$(ls -A "$BT")" ]
+  pipe HANDOFF_REF=nope -- --no-dashboard --no-tips
+  has "error: cannot fetch" "piped install reports a bad ref"
+  assert "a failed fetch deletes its copy" [ -z "$(ls -A "$BT")" ]
+  pipe HANDOFF_REF=rel -- --uninstall
+  lacks "fetching" "piped uninstall fetches nothing"
+  assert "piped uninstall removes the skills" [ ! -e "$BC/skills/handoff" ]
+  assert "piped uninstall removes tips" [ ! -e "$BC/skills/tips" ]
 fi
 
 echo "passed: $PASS, failed: $FAIL"

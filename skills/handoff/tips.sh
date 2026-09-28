@@ -12,8 +12,8 @@ GLOBAL=_global
 TIPS_MAX=5
 SKILLS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 
-# The project slug costs a few git calls; cmd_tips computes it once.
-tips_init() { [[ -n ${TIPS_SLUG:-} ]] || TIPS_SLUG=$(basename "$(key)"); }
+# The project slug costs a few git calls; it is computed once (see key).
+tips_init() { [[ -n ${TIPS_SLUG:-} ]] || { key >/dev/null; TIPS_SLUG=$(basename "$KEY"); }; }
 tips_pdir() { tips_init; echo "$TIPS_ROOT/$TIPS_SLUG"; }
 tips_gdir() { echo "$TIPS_ROOT/$GLOBAL"; }
 # On when our tips skill (with its marker line) sits next to this skill.
@@ -66,10 +66,12 @@ tips_log() {
 
 # set_field FILE KEY VALUE: replaces KEY in the frontmatter or adds it.
 # VALUE goes through ENVIRON: awk -v would expand backslash escapes.
+# A CRLF file is rewritten with LF.
 set_field() {
   local tmp="$1.tmp.$$"
   TIPS_V=$3 awk -v k="$2" '
     BEGIN { v = ENVIRON["TIPS_V"]; gsub(/[\r\n]+/, " ", v) }
+    { sub(/\r$/, "") }
     NR == 1 && $0 == "---" { fm = 1; print; next }
     fm && $0 == "---" { if (!done) print k ": " v; fm = 0; print; next }
     fm && index($0, k ":") == 1 { print k ": " v; done = 1; next }
@@ -84,12 +86,46 @@ set_field() {
 # Error mode: keyword items (4+ chars) found in the error text; a tip needs
 # 2 items or one of 10+ chars; a quoted item may contain commas.
 # Text goes through ENVIRON: awk -v would expand backslash escapes.
+# awk runs with LC_ALL=C: mawk and macOS awk lowercase only ASCII or count
+# bytes, and macOS awk aborts on a stray UTF-8 byte in a regex match. So
+# lowercasing (ASCII + Cyrillic), lengths and word starts are done by hand
+# on UTF-8 bytes, the same in every awk.
 tips_score() {
   local mode=$1 f files=()
   while IFS= read -r f; do files+=("$f"); done < <(tip_files)
   ((${#files[@]})) || return
-  TIPS_Q=$2 TIPS_GDIR="$(tips_gdir)/" awk -v mode="$mode" -v env="$(tips_env)" '
-    BEGIN { q = ENVIRON["TIPS_Q"]; gdir = ENVIRON["TIPS_GDIR"] }
+  LC_ALL=C TIPS_Q=$2 TIPS_GDIR="$(tips_gdir)/" awk -v mode="$mode" -v env="$(tips_env)" '
+    BEGIN {
+      gdir = ENVIRON["TIPS_GDIR"]
+      for (i = 128; i < 192; i++) CONT = CONT sprintf("%c", i)  # UTF-8 continuation bytes
+      for (i = 195; i < 212; i++) LEAD = LEAD sprintf("%c", i)  # leads of Latin-1..Cyrillic letters
+      up = "АБВГҐДЕЄЁЖЗИІЇЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"; lo = "абвгґдеєёжзиіїйклмнопрстуфхцчшщъыьэюя"
+      for (i = 1; i < length(up); i += 2) { NC++; UP[NC] = substr(up, i, 2); LO[NC] = substr(lo, i, 2) }
+      q = lc(ENVIRON["TIPS_Q"])
+    }
+    # tolower for ASCII and Cyrillic (all its capitals start with \320 or \322).
+    function lc(s,   i) {
+      s = tolower(s)
+      if (index(s, "\320") || index(s, "\322")) for (i = 1; i <= NC; i++) gsub(UP[i], LO[i], s)
+      return s
+    }
+    # Length in characters: bytes that are not UTF-8 continuation bytes.
+    function ulen(s,   i, n) {
+      for (i = 1; i <= length(s); i++) if (!index(CONT, substr(s, i, 1))) n++
+      return n + 0
+    }
+    # The first N characters of S.
+    function uprefix(s, n,   i, c) {
+      for (i = 1; i <= length(s); i++) if (!index(CONT, substr(s, i, 1)) && ++c > n) return substr(s, 1, i - 1)
+      return s
+    }
+    # True when the character that ends at byte J is a letter, digit or _.
+    function wordch(s, j,   c) {
+      c = substr(s, j, 1)
+      if (c ~ /[A-Za-z0-9_]/) return 1
+      while (j > 1 && index(CONT, c)) c = substr(s, --j, 1)
+      return index(LEAD, c) > 0
+    }
     # Splits keywords on commas outside double quotes; drops the quotes.
     function splitkw(s, a,   n, i, c, cur, inq) {
       n = 0; cur = ""; inq = 0
@@ -107,7 +143,7 @@ tips_score() {
       off = 0
       while ((p = index(substr(s, off + 1), it))) {
         off += p
-        if (substr(s, off - 1, 1) !~ /[[:alnum:]_]/) return 1
+        if (!wordch(s, off - 1)) return 1
       }
       return 0
     }
@@ -115,35 +151,35 @@ tips_score() {
       if (fname == "") return
       id = fname; sub(/.*\//, "", id); sub(/\.md$/, "", id)
       level = index(fname, gdir) == 1 ? "global" : "project"
-      if (F["status"] != "active") return
+      if (F["status"] != "" && F["status"] != "active") return  # no status: active
       if (F["env"] != "") {
         ok = 0; n = split(tolower(F["env"]), items, /[ ,]+/)
         for (i = 1; i <= n; i++) if (items[i] == env) ok = 1
         if (!ok) return
       }
       if (mode == "error") {
-        e = tolower(q); n = splitkw(F["keywords"], items); hits = 0; strong = 0
+        n = splitkw(lc(F["keywords"]), items); hits = 0; strong = 0
         for (i = 1; i <= n; i++) {
-          it = tolower(items[i]); gsub(/^ +| +$/, "", it)
-          if (length(it) >= 4 && index(e, it)) { hits++; if (length(it) >= 10) strong = 1 }
+          it = items[i]; gsub(/^ +| +$/, "", it)
+          if (ulen(it) >= 4 && index(q, it)) { hits++; if (ulen(it) >= 10) strong = 1 }
         }
         if (!(strong || hits >= 2)) return
         score = hits
       } else if (mode == "prompt") {
-        e = " " tolower(q); n = splitkw(F["keywords"], items); hits = 0; strong = 0
+        e = " " q; n = splitkw(lc(F["keywords"]), items); hits = 0; strong = 0
         for (i = 1; i <= n; i++) {
-          it = tolower(items[i]); gsub(/^ +| +$/, "", it)
-          if (length(it) >= 3 && atword(e, it)) { hits++; if (length(it) >= 5 || it ~ /[^[:alnum:]_-]/) strong = 1 }
+          it = items[i]; gsub(/^ +| +$/, "", it)
+          if (ulen(it) >= 3 && atword(e, it)) { hits++; if (ulen(it) >= 5 || it ~ /[ !-,.\/:-@[-^`{-~]/) strong = 1 }
         }
         if (!(strong || hits >= 2)) return
         score = hits
       } else {
-        n = split(tolower(q), w, /[ \t,;:()"`'\''|]+/); score = 0; hits = 0
-        kw = tolower(F["keywords"]); ti = tolower(F["title"]); wh = tolower(F["when"]); bo = tolower(body)
+        n = split(q, w, /[ \t,;:()"`'\''|]+/); score = 0; hits = 0
+        kw = lc(F["keywords"]); ti = lc(F["title"]); wh = lc(F["when"]); bo = lc(body)
         for (i = 1; i <= n; i++) {
           t = w[i]
-          if (length(t) < 3 || t ~ /^(the|and|for|with|not|why|how|what|when|does|что|що|як|при|для|або|чому)$/) continue
-          if (length(t) > 6) t = substr(t, 1, 5)
+          if (ulen(t) < 3 || t ~ /^(the|and|for|with|not|why|how|what|when|does|что|що|як|при|для|або|чому)$/) continue
+          if (ulen(t) > 6) t = uprefix(t, 5)
           s = index(kw, t) ? 3 : index(ti, t) ? 2 : index(wh, t) ? 2 : index(bo, t) ? 1 : 0
           if (s) { score += s; hits++ }
         }
@@ -151,6 +187,7 @@ tips_score() {
       }
       printf "%d\t%s\t%s\t%s\n", score, level, id, F["title"]
     }
+    { sub(/\r$/, "") }  # CRLF files
     FNR == 1 { flush(); fname = FILENAME; fm = 0; body = ""; split("", F) }
     FNR == 1 && $0 == "---" { fm = 1; next }
     fm && $0 == "---" { fm = 0; next }
@@ -177,12 +214,13 @@ tips_search() {
 }
 
 tips_list() {
-  local f n=0
+  local f s n=0
   while read -r f; do
     [[ -n $f ]] || continue
     n=$((n + 1))
+    s=$(field status "$f")
     printf '%s | %s | %s | %s\n' "$(basename "$f" .md)" "$(tip_level "$f")" \
-      "$(field status "$f")" "$(field title "$f")"
+      "${s:-active}" "$(field title "$f")"
   done < <(tip_files)
   ((n)) || echo "(no tips)"
 }

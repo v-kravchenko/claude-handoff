@@ -4,6 +4,7 @@
 # Handoffs are keyed by the session's project directory (pass
 # ${CLAUDE_PROJECT_DIR}; the shell cwd drifts with `cd`) and a task slug:
 #   $HANDOFF_ROOT/<project-slug>/<task>/YYYY-MM-DD_HHMMSS.md
+#   (slug: home~code~app for $HOME/code/app, root~srv~x for /srv/x)
 #   $HANDOFF_ROOT/<project-slug>/_archive/<task>/...   (finished tasks)
 # Inside git the project key is the main repo root, so worktrees share it.
 # Git metadata in the handoff comes from the cwd at save time (where the work
@@ -20,17 +21,18 @@ PROJECT=${1:-}
 CMD=${2:-}
 WORKDIR=$(pwd -P)
 
-# /path/to/dir -> path~to~dir; $HOME -> home, $HOME/x -> home~x; / -> root.
+# $HOME/x/y -> home~x~y, $HOME -> home, /x/y -> root~x~y, / -> root.
+# One-to-one: % and ~ in names become %25 and %7E.
 slug() {
-  local p=$1
+  local p=$1 base=root
   case $p in
-    "$HOME") p=home ;;
-    "$HOME"/*) p=home${p#"$HOME"} ;;
+    "$HOME") p="" base=home ;;
+    "$HOME"/*) p=${p#"$HOME"} base=home ;;
+    /) p="" ;;
   esac
-  p=${p#/}
-  if [[ -n $p ]]; then tr / '~' <<<"$p"; else echo root; fi
+  printf '%s%s\n' "$base" "$(printf '%s' "$p" | sed 's/%/%25/g; s/~/%7E/g' | tr / '~')"
 }
-field() { sed -n "s/^$1: //p" "$2" | head -n 1; }
+field() { sed -n "s/^$1: //p" "$2" | head -n 1 | tr -d '\r'; }
 
 in_git() { git rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 
@@ -45,11 +47,16 @@ branch() {
 }
 
 # Key is computed inside the project dir, independent of the caller's cwd.
-key() (
-  cd "$PROJECT" || exit
-  local base; if in_git; then base=$(repo_root); else base=$(pwd -P); fi
-  echo "$ROOT/$(slug "$base")"
-)
+# Cached in KEY: the dispatch below calls key once in the main shell, since
+# $(key) runs in a subshell and could not keep the value.
+key() {
+  [[ -n ${KEY:-} ]] || KEY=$(
+    cd "$PROJECT" || exit
+    if in_git; then base=$(repo_root); else base=$(pwd -P); fi
+    echo "$ROOT/$(slug "$base")"
+  )
+  echo "$KEY"
+}
 
 valid_task() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]*$ && $1 != "$ARCHIVE" ]]; }
 
@@ -76,20 +83,13 @@ task_names() {
   done | sort -r | cut -d' ' -f2
 }
 
-# Shell command that moves an archived task back (also merges into an active
-# task of the same name).
-restore_cmd() {
-  local k; k=$(key)
-  echo "mkdir -p '$k/$1' && mv '$k/$ARCHIVE/$1'/*.md '$k/$1'/ && rmdir '$k/$ARCHIVE/$1'"
-}
-
 # @query -> task (exact name). Prints the task or a message.
 resolve() {
   local q=${1#@}
   if valid_task "$q" && [[ -d $(key)/$q ]]; then
     echo "$q"
   elif valid_task "$q" && [[ -d $(key)/$ARCHIVE/$q ]]; then
-    echo "ARCHIVED: @$q (restore: $(restore_cmd "$q"))"; return 1
+    echo "ARCHIVED: @$q"; return 1
   else
     echo "NO TASK: @$q"; return 1
   fi
@@ -141,7 +141,7 @@ cmd_new() {
   echo "task: $t"
   echo "latest: $prev"
   if [[ -z $prev && -d $(key)/$ARCHIVE/$t ]]; then
-    echo "note: @$t was archived; to continue it instead, restore: $(restore_cmd "$t")"
+    echo "note: @$t was archived; to continue it instead, restore it: /pickup @$t offers Restore"
   fi
 }
 
@@ -252,6 +252,13 @@ if [[ -z $PROJECT || ! -d $PROJECT ]]; then
   echo "$USAGE"
   exit 0
 fi
+
+# The hooks run on every prompt or failure: they compute the key only when
+# there are tips to search (tips_init).
+case "$CMD ${3:-}" in
+  meta\ *|git\ *|"tips hook"|"tips prompt-hook") ;;
+  *) key >/dev/null ;;
+esac
 
 case "$CMD" in
   meta) cmd_meta ;;
