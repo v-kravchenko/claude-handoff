@@ -764,6 +764,36 @@ EOF
   OUT=$(cat "$TMP/dash.log")
   has "http://127.0.0.1:$PORT/" "prints the URL"
 
+  # --background returns at once; --stop ends it. Port 0 picks a free one.
+  OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --background --no-open --port 0 2>&1)
+  has "handoffs --stop to stop" "--background starts detached"
+  BURL=$(sed -n 's/^handoffs: \(http[^ ]*\).*/\1/p' <<<"$OUT")
+  assert "--background serves the page" python3 -c 'import urllib.request,sys; urllib.request.urlopen(sys.argv[1])' "$BURL"
+  OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --background --no-open 2>&1)
+  has "already running at $BURL" "a second --background reuses the running one"
+  OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --stop 2>&1)
+  has "stopped (pid" "--stop stops the background dashboard"
+  OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --stop 2>&1); rc=$?
+  assert "--stop without a dashboard exits with 1" [ "$rc" -eq 1 ]
+
+  # handoffs service: only --dry-run and the not-installed paths (no systemd/launchd in CI).
+  OUT=$(HANDOFF_SERVICE_KIND=systemd XDG_CONFIG_HOME="$TMP/xdg" HANDOFF_ROOT="$TMP/my root" \
+    python3 "$DASH" service install --port 8801 --read-only --dry-run 2>&1)
+  has "# $TMP/xdg/systemd/user/handoffs.service" "service unit goes to the systemd user dir"
+  has "--no-open --port 8801 --read-only" "service runs the dashboard with the given options"
+  has "Environment=\"HANDOFF_ROOT=$TMP/my root\"" "service keeps HANDOFF_ROOT, quoted"
+  has "systemctl --user enable --now handoffs.service" "service install enables the unit"
+  assert "--dry-run writes nothing" [ ! -e "$TMP/xdg/systemd" ]
+  OUT=$(HANDOFF_SERVICE_KIND=launchd HOME="$TMP/mac" python3 "$DASH" service install --dry-run 2>&1)
+  has "<key>RunAtLoad</key><true/>" "launchd plist starts at login"
+  has "launchctl bootstrap gui/" "launchd install bootstraps the agent"
+  OUT=$(HANDOFF_SERVICE_KIND=systemd XDG_CONFIG_HOME="$TMP/xdg" python3 "$DASH" service status 2>&1); rc=$?
+  assert "service status without a unit exits with 1" [ "$rc" -eq 1 ]
+  OUT=$(HANDOFF_SERVICE_KIND=systemd XDG_CONFIG_HOME="$TMP/xdg" python3 "$DASH" service restart 2>&1); rc=$?
+  assert "service restart without a unit is a no-op" [ "$rc" -eq 0 ]
+  OUT=$(HANDOFF_SERVICE_KIND=none python3 "$DASH" service install 2>&1); rc=$?
+  has "handoffs --background" "without a service manager, --background is suggested"
+
   # install.sh puts the command into HANDOFF_BIN_DIR and removes only its own file.
   INST="$(dirname "$DASH")/../install.sh"
   # </dev/null: from a terminal install.sh would ask its questions.

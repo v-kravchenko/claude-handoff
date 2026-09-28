@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Local web dashboard for claude-handoff tasks (part of claude-handoff).
 
-Usage: handoffs [--port N] [--host ADDR] [--no-open] [--json] [--version]
+Usage: handoffs [--port N] [--host ADDR] [--no-open] [--read-only] [--background | --stop]
+                [--json] [--version]
+       handoffs service install|uninstall|restart|status [--port N] [--dry-run]
 
 Serves a page with every task of every project under the handoff
 root ($HANDOFF_ROOT, else $CLAUDE_CONFIG_DIR/handoffs, else ~/.claude/handoffs).
@@ -19,10 +21,12 @@ import os
 import platform
 import re
 import secrets
+import signal
 import shutil
 import socket
 import subprocess
 import sys
+import time
 import urllib.parse
 import webbrowser
 
@@ -561,9 +565,232 @@ def open_browser(url):
         return False
 
 
+# --- background & service -----------------------------------------------------
+
+PIDFILE = ".handoffs.pid"  # "<pid> <url>" of a --background dashboard
+LABEL = "com.claude-handoff.handoffs"
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def read_pidfile(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            pid, _, url = fh.read().strip().partition(" ")
+        pid = int(pid)
+    except (OSError, ValueError):
+        return None, ""
+    return (pid, url) if pid_alive(pid) else (None, "")
+
+
+def start_background(argv, no_open):
+    """Re-run the dashboard detached, wait for its URL line, record the PID."""
+    root = handoff_root()
+    os.makedirs(root, exist_ok=True)
+    pidfile = os.path.join(root, PIDFILE)
+    pid, url = read_pidfile(pidfile)
+    if pid:
+        print("handoffs: already running at %s (pid %d; handoffs --stop)" % (url, pid))
+        return 0
+    log = os.path.join(root, ".handoffs.log")
+    args = [a for a in argv if a != "--background"] + ["--no-open"]
+    with open(log, "w", encoding="utf-8") as out:
+        proc = subprocess.Popen([sys.executable, os.path.abspath(__file__)] + args,
+                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+    url = ""
+    for _ in range(100):  # up to 5 s
+        try:
+            with open(log, encoding="utf-8") as fh:
+                m = re.search(r"^handoffs: (\S+)", fh.read(), re.M)
+        except OSError:
+            m = None
+        if m:
+            url = m.group(1)
+            break
+        if proc.poll() is not None:
+            break
+        time.sleep(0.05)
+    if not url:
+        with open(log, encoding="utf-8") as fh:
+            sys.stderr.write(fh.read())
+        if proc.poll() is None:
+            proc.terminate()
+        print("error: the dashboard did not start (log: %s)" % log, file=sys.stderr)
+        return 1
+    with open(pidfile, "w", encoding="utf-8") as fh:
+        fh.write("%d %s\n" % (proc.pid, url))
+    print("handoffs: %s  (pid %d; handoffs --stop to stop)" % (url, proc.pid))
+    if not no_open and not open_browser(url):
+        print("open the URL above in a browser")
+    return 0
+
+
+def stop_background():
+    pidfile = os.path.join(handoff_root(), PIDFILE)
+    pid, _ = read_pidfile(pidfile)
+    if os.path.exists(pidfile):
+        os.remove(pidfile)
+    if not pid:
+        print("handoffs: no background dashboard is running")
+        return 1
+    os.kill(pid, signal.SIGTERM)
+    print("handoffs: stopped (pid %d)" % pid)
+    return 0
+
+
+def service_kind():
+    if sys.platform == "darwin":
+        return "launchd"
+    if sys.platform.startswith("linux") and shutil.which("systemctl") and not os.environ.get("TERMUX_VERSION"):
+        return "systemd"
+    return ""
+
+
+def service_path(kind):
+    home = os.path.expanduser("~")
+    if kind == "launchd":
+        return os.path.join(home, "Library", "LaunchAgents", LABEL + ".plist")
+    cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    return os.path.join(cfg, "systemd", "user", "handoffs.service")
+
+
+def service_env():
+    return {k: os.environ[k] for k in ("HANDOFF_ROOT", "CLAUDE_CONFIG_DIR", "HANDOFF_PORT") if os.environ.get(k)}
+
+
+def systemd_quote(s):
+    if s and not re.search(r'[\s"\\\'$%;]', s):
+        return s
+    return '"%s"' % s.replace("\\", "\\\\").replace('"', '\\"').replace("$", "$$").replace("%", "%%")
+
+
+def service_file(kind, cmd, env):
+    if kind == "systemd":
+        lines = ["[Unit]", "Description=claude-handoff dashboard (handoffs)", "", "[Service]",
+                 "ExecStart=" + " ".join(systemd_quote(c) for c in cmd)]
+        lines += ["Environment=" + systemd_quote("%s=%s" % kv) for kv in sorted(env.items())]
+        lines += ["Restart=on-failure", "", "[Install]", "WantedBy=default.target", ""]
+        return "\n".join(lines)
+    from xml.sax.saxutils import escape
+    s = lambda v: "<string>%s</string>" % escape(v)  # noqa: E731
+    logf = os.path.join(os.path.expanduser("~"), "Library", "Logs", "handoffs.log")
+    out = ['<?xml version="1.0" encoding="UTF-8"?>',
+           '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+           '<plist version="1.0">', "<dict>",
+           "<key>Label</key>" + s(LABEL),
+           "<key>ProgramArguments</key>", "<array>"] + ["  " + s(c) for c in cmd] + ["</array>"]
+    if env:
+        out += ["<key>EnvironmentVariables</key>", "<dict>"]
+        out += ["  <key>%s</key>%s" % (escape(k), s(v)) for k, v in sorted(env.items())]
+        out += ["</dict>"]
+    out += ["<key>RunAtLoad</key><true/>", "<key>KeepAlive</key><true/>",
+            "<key>StandardOutPath</key>" + s(logf), "<key>StandardErrorPath</key>" + s(logf),
+            "</dict>", "</plist>", ""]
+    return "\n".join(out)
+
+
+def run(cmd, quiet=False):
+    r = subprocess.run(cmd, stdout=subprocess.DEVNULL if quiet else None,
+                       stderr=subprocess.DEVNULL if quiet else None)
+    return r.returncode
+
+
+def service_main(argv):
+    ap = argparse.ArgumentParser(prog="handoffs service",
+                                 description="Run the dashboard as a user service (systemd --user or launchd).")
+    ap.add_argument("action", choices=["install", "uninstall", "restart", "status"])
+    ap.add_argument("--port", type=int, help="port for the service (default: $HANDOFF_PORT or 8765)")
+    ap.add_argument("--host", help="address to listen on (default: 127.0.0.1)")
+    ap.add_argument("--read-only", action="store_true", help="serve the dashboard read-only")
+    ap.add_argument("--dry-run", action="store_true", help="print the service file and commands; change nothing")
+    args = ap.parse_args(argv)
+    kind = os.environ.get("HANDOFF_SERVICE_KIND") or service_kind()  # override for tests
+    if kind not in ("systemd", "launchd"):
+        print("error: no systemd --user or launchd here; use `handoffs --background` instead", file=sys.stderr)
+        return 2
+    path = service_path(kind)
+    uid = "gui/%d" % os.getuid()
+    if kind == "systemd":
+        cmds = {"install": [["systemctl", "--user", "daemon-reload"],
+                            ["systemctl", "--user", "enable", "--now", "handoffs.service"],
+                            ["systemctl", "--user", "restart", "handoffs.service"]],
+                "uninstall": [["systemctl", "--user", "disable", "--now", "handoffs.service"]],
+                "restart": [["systemctl", "--user", "try-restart", "handoffs.service"]],
+                "status": [["systemctl", "--user", "--no-pager", "status", "handoffs.service"]]}
+    else:
+        cmds = {"install": [["launchctl", "bootout", uid, path], ["launchctl", "bootstrap", uid, path]],
+                "uninstall": [["launchctl", "bootout", uid, path]],
+                "restart": [["launchctl", "kickstart", "-k", "%s/%s" % (uid, LABEL)]],
+                "status": [["launchctl", "print", "%s/%s" % (uid, LABEL)]]}
+    installed = os.path.exists(path)
+
+    if args.action == "install":
+        cmd = [sys.executable, os.path.abspath(__file__), "--no-open"]
+        if args.port is not None:
+            cmd += ["--port", str(args.port)]
+        if args.host:
+            cmd += ["--host", args.host]
+        if args.read_only:
+            cmd += ["--read-only"]
+        text = service_file(kind, cmd, service_env())
+        if args.dry_run:
+            print("# %s" % path)
+            sys.stdout.write(text)
+            for c in cmds["install"]:
+                print("$ " + " ".join(c))
+            return 0
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print("wrote %s" % path)
+        if kind == "launchd":
+            run(cmds["install"][0], quiet=True)  # not loaded yet is fine
+            rc = run(cmds["install"][1])
+        else:
+            rc = run(cmds["install"][0]) or run(cmds["install"][1]) or run(cmds["install"][2])
+        if rc:
+            return rc
+        print("handoffs service is running: http://127.0.0.1:%s/" % (args.port or os.environ.get("HANDOFF_PORT") or 8765))
+        if kind == "systemd":
+            print("note: to keep it running while logged out: loginctl enable-linger")
+        return 0
+
+    if not installed:
+        if args.action == "restart":
+            return 0  # nothing to restart (install.sh calls this after an upgrade)
+        print("handoffs service is not installed (handoffs service install)")
+        return 1 if args.action == "status" else 0
+    if args.dry_run:
+        for c in cmds[args.action]:
+            print("$ " + " ".join(c))
+        if args.action == "uninstall":
+            print("$ rm " + path)
+        return 0
+    if args.action == "uninstall":
+        run(cmds["uninstall"][0])
+        os.remove(path)
+        if kind == "systemd":
+            run(["systemctl", "--user", "daemon-reload"])
+        print("removed %s" % path)
+        return 0
+    return run(cmds[args.action][0])
+
+
 # --- main ---------------------------------------------------------------------
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["service"]:
+        return service_main(argv[1:])
     ap = argparse.ArgumentParser(prog="handoffs", description="Local web dashboard for claude-handoff tasks.")
     env_port = os.environ.get("HANDOFF_PORT") or "8765"
     if not env_port.isdigit() or int(env_port) > 65535:
@@ -575,6 +802,8 @@ def main(argv=None):
     ap.add_argument("--host", default="127.0.0.1", help="address to listen on (default: 127.0.0.1)")
     ap.add_argument("--no-open", action="store_true", help="do not open a browser")
     ap.add_argument("--read-only", action="store_true", help="disable Done/Restore/Rename and Delete buttons")
+    ap.add_argument("--background", action="store_true", help="run detached and return (stop: --stop)")
+    ap.add_argument("--stop", action="store_true", help="stop the dashboard started with --background")
     ap.add_argument("--json", action="store_true", help="print the task data as JSON and exit")
     ap.add_argument("--version", action="version", version="handoffs " + VERSION)
     args = ap.parse_args(argv)
@@ -583,6 +812,10 @@ def main(argv=None):
         json.dump(collect(handoff_root()), sys.stdout, ensure_ascii=False, indent=2)
         print()
         return 0
+    if args.stop:
+        return stop_background()
+    if args.background:
+        return start_background(argv, args.no_open)
 
     host = args.host.strip("[]")
     if host not in LOOPBACK:
@@ -595,9 +828,11 @@ def main(argv=None):
     port = server.server_address[1]
     shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     url = "http://%s:%d/" % ("[%s]" % shown if ":" in shown else shown, port)
-    print("handoffs: %s  (root: %s; Ctrl+C to stop)" % (url, handoff_root()), flush=True)
+    hint = "; Ctrl+C to stop" if sys.stdout.isatty() else ""  # not under a service or --background
+    print("handoffs: %s  (root: %s%s)" % (url, handoff_root(), hint), flush=True)
     if not args.no_open and not open_browser(url):
         print("open the URL above in a browser", flush=True)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # service/--stop: close the socket cleanly
     try:
         server.serve_forever()
     except KeyboardInterrupt:

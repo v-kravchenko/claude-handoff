@@ -240,7 +240,24 @@ date.
 | `--host ADDR` | Address to listen on (default `127.0.0.1`). |
 | `--no-open` | Only print the URL. |
 | `--read-only` | Hide the *Done*, *Restore*, *Rename* and *Delete* buttons and refuse changes. |
+| `--background` | Start detached, print the URL and return; a second call reuses the running one. |
+| `--stop` | Stop the dashboard started with `--background`. |
 | `--json` | Print the task data as JSON and exit. |
+
+To keep the dashboard always running, install it as a user service
+(systemd `--user` on Linux, a launchd agent on macOS):
+
+```
+handoffs service install [--port N] [--host ADDR] [--read-only]
+handoffs service status | restart | uninstall
+```
+
+The service starts at login and restarts on failure; add `--dry-run` to see
+the unit/plist without changing anything. `HANDOFF_ROOT`, `CLAUDE_CONFIG_DIR`
+and `HANDOFF_PORT` are copied into it. `install.sh` restarts the service after
+an update and removes it on uninstall. On Linux, `loginctl enable-linger`
+keeps it running while you are logged out. Termux has no service manager: use
+`handoffs --background`.
 
 The browser opens with `open` (macOS), `xdg-open` (Linux desktop),
 `wslview` or `explorer.exe` (WSL), the default browser (Windows) or

@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `handoffs --background` / `--stop`: run the dashboard detached, without
+  holding the terminal.
+- `handoffs service install|uninstall|restart|status`: optional user service
+  (systemd `--user` or launchd) that keeps the dashboard running;
+  `install.sh` restarts it after an update and removes it on uninstall.
+
 ## [1.3.0] - 2026-09-28
 
 ### Changed

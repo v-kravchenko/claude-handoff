@@ -87,6 +87,8 @@ install_dashboard() {
   echo "installing $BIN/$DASH"
   cp "$REPO/bin/$DASH" "$BIN/$DASH"
   chmod +x "$BIN/$DASH"
+  # A running `handoffs service` must pick up the new copy (no-op without one).
+  command -v python3 >/dev/null 2>&1 && "$BIN/$DASH" service restart >/dev/null 2>&1
   case ":$PATH:" in
     *":$BIN:"*) ;;
     *) echo "note: $BIN is not in PATH; add it to run \`$DASH\`" ;;
@@ -98,6 +100,7 @@ install_dashboard() {
 remove_dashboard() {
   # Only remove a file that is ours.
   if [[ -f $BIN/$DASH ]] && grep -q "$OURS" "$BIN/$DASH"; then
+    command -v python3 >/dev/null 2>&1 && "$BIN/$DASH" service uninstall >/dev/null 2>&1
     rm -f "$BIN/$DASH"; echo "removed $BIN/$DASH"
   fi
 }
