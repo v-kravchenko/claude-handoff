@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Dashboard: a sidebar with the search, All, the projects (active-task counts,
+  or matches while searching) and Global tips replaces the grid of project
+  tiles. A picked project takes the full width; All shows the projects in one
+  column. The pick is kept in the URL hash, so a reload keeps it. On a narrow
+  screen the sidebar turns into a dropdown.
+
 ## [1.4.1] - 2026-09-28
 
 ### Fixed

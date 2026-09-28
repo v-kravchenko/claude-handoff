@@ -941,13 +941,35 @@ body { margin: 0; background: var(--bg); color: var(--fg);
 /* Column filling the viewport: the footer sits at the bottom even when the list is short. */
 main { max-width: 1240px; margin: 0 auto; padding: 18px; min-height: 100vh;
   display: flex; flex-direction: column; }
-/* Project tiles in a responsive grid; a tile with an open item takes the row. */
-#list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
-  gap: 16px; }
-#list > .empty { grid-column: 1 / -1; }
+/* Sidebar (search, All, projects, Global tips) and the picked projects in one column. */
+.layout { display: flex; align-items: flex-start; gap: 18px; }
+#side { flex: none; width: 240px; position: sticky; top: 18px; max-height: calc(100vh - 36px);
+  overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+#nav { display: flex; flex-direction: column; gap: 1px; }
+.nitem { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  border: 0; background: none; padding: 5px 8px; color: var(--fg); }
+.nitem:hover { background: var(--code); }
+.nitem[aria-current="page"] { background: var(--accentbg); color: var(--accent); font-weight: 500; }
+.nitem[aria-current="page"] .count { color: var(--accent); background: var(--card); }
+.nitem .nname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nitem .count { margin-left: 0; }
+.nitem svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; }
+.nitem .dot { flex: none; width: 10px; height: 10px; margin: 0 3px; border-radius: 50%; background: hsl(var(--h) 65% 55%); }
+.nsep { border-top: 1px solid var(--line); margin: 5px 8px; }
+#navsel { display: none; font: inherit; color: var(--fg); background: var(--card);
+  border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+#list { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+/* Narrow screen: the sidebar goes above the list, its entries into a <select>. */
+@media (max-width: 760px) {
+  .layout { display: block; }
+  #side { position: static; width: auto; max-height: none; margin-bottom: 14px; }
+  #nav { display: none; }
+  #navsel { display: block; }
+}
 .mono, code, .task { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 header { display: flex; align-items: center; gap: 12px; margin: 4px 0 14px; }
-h1 { font-size: 20px; margin: 0; }
+h1 { font-size: 20px; margin: 0; margin-right: auto; }
 mark { background: var(--mark); color: inherit; border-radius: 2px; }
 .meta { color: var(--muted); font-size: 14px; }
 button, #q { font: inherit; color: var(--fg); background: var(--card);
@@ -959,7 +981,7 @@ button.primary { background: var(--accentbg); border-color: transparent; color: 
 button.ghost { background: none; border-color: transparent; color: var(--muted); }
 button.ghost:hover { color: var(--fg); background: var(--code); }
 button:focus-visible, #q:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-#q { flex: 1 1 200px; padding: 7px 12px; min-width: 0; }
+#q { padding: 7px 12px; min-width: 0; }
 
 .seg { display: inline-flex; background: var(--code); border-radius: 8px; padding: 2px; }
 .seg button { border: 0; background: none; border-radius: 6px; padding: 5px 12px; color: var(--muted); }
@@ -1027,9 +1049,7 @@ h2 .ppath { color: var(--muted); font-weight: 400; font-size: 12px; overflow: hi
 .arrow svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .item:hover .arrow { color: hsl(var(--h) 60% 45%); }
 /* Global tips: a heading over a grid of small cards. */
-.globalsec { grid-column: 1 / -1; }
 .globalsec h2 { padding: 6px 2px 10px; }
-.projhead { grid-column: 1 / -1; padding: 6px 2px 0; --h: 220; }
 .gtoggle { cursor: pointer; user-select: none; border-radius: 10px; }
 .sechead.gtoggle { width: fit-content; padding-right: 8px; }
 .gtoggle.shut .avatar svg { transform: none; }  /* .shut turns only the chevron */
@@ -1166,12 +1186,18 @@ footer a:hover { color: var(--accent); text-decoration: underline; }
 <main>
   <header>
     <h1>Handoffs</h1>
-    <input id="q" type="search" placeholder="Search  /" aria-label="Search tasks and handoff text" autocomplete="off">
     <button id="reload" class="ib ghost" title="Reload" aria-label="Reload"></button>
     <button id="theme" class="ib ghost"></button>
   </header>
   <div id="error" class="error" hidden></div>
-  <div id="list"></div>
+  <div class="layout">
+    <nav id="side" aria-label="Projects">
+      <input id="q" type="search" placeholder="Search  /" aria-label="Search tasks and handoff text" autocomplete="off">
+      <div id="nav"></div>
+      <select id="navsel" aria-label="Project"></select>
+    </nav>
+    <div id="list"></div>
+  </div>
   <footer>
     <span><span class="ver" id="ver"></span> · <span class="mono" id="root"></span></span>
     <span><a href="https://github.com/v-kravchenko/claude-handoff">GitHub</a> · <a href="https://github.com/v-kravchenko/claude-handoff/blob/main/CHANGELOG.md">Changelog</a></span>
@@ -1185,7 +1211,7 @@ footer a:hover { color: var(--accent); text-decoration: underline; }
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s);
-const state = { q: "", archOpen: [], tab: {}, open: null, globalOpen: false };  // open: key of the item in the panel
+const state = { q: "", archOpen: [], tab: {}, open: null, globalOpen: false, proj: "all" };  // open: key of the item in the panel
 // Global tips start collapsed on every load; drop the state 1.4.0 and older kept.
 try { localStorage.removeItem("handoffs.globalOpen"); } catch (e) { /* private mode */ }
 let data = null;
@@ -1876,6 +1902,54 @@ function projectName(p) {
   return t === "~" ? "~" : base(t) || t;
 }
 
+// The sidebar pick: "all", a project or GLOBAL; kept in the URL hash
+// ("#global-tips", "#<project path>", none for All) so a reload keeps it.
+const GLOBAL = "_global";
+function fromHash() {
+  let h = location.hash.slice(1);
+  try { h = decodeURI(h); } catch (e) { /* a malformed hash */ }
+  return !h ? "all" : h === "global-tips" ? GLOBAL : h;
+}
+function pick(v) {
+  const h = v === "all" ? "" : "#" + (v === GLOBAL ? "global-tips" : encodeURI(v));
+  if (h !== location.hash) history.pushState(null, "", h || location.pathname + location.search);
+  state.proj = v;
+  render();
+  window.scrollTo(0, 0);
+}
+// Sidebar and its <select> twin (narrow screens): All, the projects, Global tips.
+// A count is the active tasks, or everything that matches while searching.
+function renderNav(rows, nglobal, view, searching) {
+  const nav = $("#nav"), sel = $("#navsel");
+  nav.textContent = ""; sel.textContent = "";
+  const n = (r) => searching ? r.tasks.length + r.ptips.length : r.act.length;
+  const add = (v, label, num, lead, title) => {
+    const b = el("button", "nitem");
+    b.appendChild(lead);
+    b.appendChild(el("span", "nname", label));
+    b.appendChild(el("span", "count", String(num)));
+    if (title) b.title = title;
+    if (v === view) b.setAttribute("aria-current", "page");
+    b.addEventListener("click", () => pick(v));
+    nav.appendChild(b);
+    const o = el("option", "", label + " (" + num + ")");
+    o.value = v;
+    o.selected = v === view;
+    sel.appendChild(o);
+  };
+  add("all", "All", rows.reduce((s, r) => s + n(r), 0), icon("folder"), "every project in one column");
+  if (rows.length) nav.appendChild(el("div", "nsep"));
+  rows.forEach((r) => {
+    const dot = el("span", "dot");
+    dot.style.setProperty("--h", hue(projectName(r.project)));
+    add(r.project, projectName(r.project), n(r), dot, r.project);
+  });
+  if (nglobal) {
+    nav.appendChild(el("div", "nsep"));
+    add(GLOBAL, "Global tips", nglobal, icon("globe"), "tips that hold in every project on this machine");
+  }
+}
+
 function render() {
   if (!data) return;
   const all = data.tasks;
@@ -1899,9 +1973,8 @@ function render() {
 
   const list = $("#list");
   list.textContent = "";
-  let shownAny = false;
   const count = (n, cls) => el("span", "count" + (cls ? " " + cls : ""), String(n));
-  // Section heading: icon avatar, title with a count, subtitle (Projects, Global tips).
+  // Section heading: icon avatar, title with a count, subtitle (Global tips).
   const secHead = (name, title, sub, cls) => {
     const head = el("h2", "sechead" + (cls ? " " + cls : ""));
     const av = el("span", "avatar");
@@ -1914,17 +1987,20 @@ function render() {
     head.appendChild(pt);
     return [head, pn];
   };
-  // "Projects" heading over the tiles; added before the first tile.
-  const [phead, pname] = secHead("folder", "Projects", "tasks and tips of each project directory", "projhead");
   const items = (nodes) => { const box = el("div", "items"); nodes.forEach((n) => box.appendChild(n)); return box; };
 
-  projects.forEach((project) => {
+  // Projects with something to show (a search hides the rest, in the sidebar too).
+  const rows = projects.map((project) => {
     const tasks = all.filter((t) => t.project === project && matches(t));
-    const ptips = tipsOf(slugOf[project]);
-    if (!tasks.length && !ptips.length) return;
-    if (!shownAny) list.appendChild(phead);
-    shownAny = true;
-    const act = tasks.filter((t) => t.status === "active");
+    return { project, tasks, ptips: tipsOf(slugOf[project]), act: tasks.filter((t) => t.status === "active") };
+  }).filter((r) => r.tasks.length || r.ptips.length);
+  const gtips = tipsOf("_global");
+  // The pick falls back to All while it has nothing to show (a search, a stale hash).
+  let view = state.proj;
+  if (view === GLOBAL ? !gtips.length : view !== "all" && !rows.some((r) => r.project === view)) view = "all";
+  renderNav(rows, gtips.length, view, !!q);
+
+  const projectSection = ({ project, tasks, ptips, act }) => {
     // Done forks stay under their active parent (at any depth); the rest go to Archived.
     const tree = act.slice(), inTree = new Set(act.map((t) => t.task));
     for (let grew = true; grew;) {
@@ -1987,41 +2063,48 @@ function render() {
         if (open) sec.appendChild(items(cards(arch)));
       }
     }
-    list.appendChild(sec);
-  });
-  // Global tips: a heading and a grid of cards across the full width.
-  const nproj = list.children.length - (shownAny ? 1 : 0);
-  if (shownAny) pname.appendChild(count(nproj));
-  const gtips = tipsOf("_global");
-  if (gtips.length) {
-    shownAny = true;
-    const open = state.globalOpen || !!q;  // a search shows matching global tips
+    return sec;
+  };
+  // Global tips: a heading and a grid of cards; folds in All, always open on its own.
+  const globalSection = () => {
+    const alone = view === GLOBAL;
+    const open = alone || state.globalOpen || !!q;  // a search shows matching global tips
     const h = 200;
     const sec = el("section", "globalsec");
     sec.style.setProperty("--h", h);
     const [head, pn] = secHead("globe", "Global tips", "hold in every project on this machine",
-      "gtoggle" + (open ? "" : " shut"));
+      alone ? "" : "gtoggle" + (open ? "" : " shut"));
     pn.appendChild(count(gtips.length, "tips"));
-    head.tabIndex = 0;
-    head.setAttribute("role", "button");
-    head.setAttribute("aria-expanded", String(open));
-    const toggle = () => {
-      state.globalOpen = !state.globalOpen;
-      render();
-    };
-    head.addEventListener("click", toggle);
-    head.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
-    const chev = el("span", "chev");
-    chev.appendChild(icon("down"));
-    head.appendChild(chev);
+    if (!alone) {
+      head.tabIndex = 0;
+      head.setAttribute("role", "button");
+      head.setAttribute("aria-expanded", String(open));
+      const toggle = () => {
+        state.globalOpen = !state.globalOpen;
+        render();
+      };
+      head.addEventListener("click", toggle);
+      head.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+      const chev = el("span", "chev");
+      chev.appendChild(icon("down"));
+      head.appendChild(chev);
+    }
     sec.appendChild(head);
     if (open) {
       const grid = el("div", "tipgrid");
       tipsList(gtips, globalWho, h).forEach((c) => { c.classList.add("tcard"); grid.appendChild(c); });
       sec.appendChild(grid);
     }
-    list.appendChild(sec);
+    return sec;
+  };
+
+  if (view === GLOBAL) list.appendChild(globalSection());
+  else if (view !== "all") list.appendChild(projectSection(rows.find((r) => r.project === view)));
+  else {
+    rows.forEach((r) => list.appendChild(projectSection(r)));
+    if (gtips.length) list.appendChild(globalSection());
   }
+  const shownAny = rows.length || gtips.length;
   if (!shownAny) {
     const e = el("div", "empty", all.length || tips.length ? "Nothing matches the search." : "No handoffs yet. Save one with /handoff.");
     if (q) {
@@ -2067,6 +2150,9 @@ $("#pclose").appendChild(icon("close"));
 $("#pclose").addEventListener("click", closePanel);
 $("#scrim").addEventListener("click", closePanel);
 $("#reload").addEventListener("click", load);
+$("#navsel").addEventListener("change", (e) => pick(e.target.value));
+window.addEventListener("popstate", () => { state.proj = fromHash(); render(); });
+state.proj = fromHash();
 let searchTimer = 0;
 $("#q").addEventListener("input", (e) => {
   state.q = e.target.value;
