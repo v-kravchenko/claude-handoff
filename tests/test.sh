@@ -476,11 +476,14 @@ run "$TP" tips search --error "ssh: Permission denied, please try again."
 has "comma-kw" "error mode matches a quoted keyword with a comma"
 run "$TP" tips search --error "ls: Permission denied"
 lacks "comma-kw" "error mode does not match a fragment of a quoted keyword"
-# The log masks likely secrets.
-run "$TP" tips search "token=hunter2 key ABCDEFGHIJKLMNOPQRSTUVWXYZ0123 fine"
-assert "log masks a token value" [ "$(grep -c hunter2 "$TROOT/log.jsonl")" = 0 ]
-assert "log masks a long token" [ "$(grep -c ABCDEFGHIJKLMNOP "$TROOT/log.jsonl")" = 0 ]
-assert "log keeps plain words" grep -q 'token=\*\*\* key \*\*\* fine' "$TROOT/log.jsonl"
+# The log keeps the found ids, never the query text.
+run "$TP" tips search "token=hunter2 comma message"
+assert "log keeps no query text" [ "$(grep -c hunter2 "$TROOT/log.jsonl")" = 0 ]
+assert "search logs the found ids" grep -q '"event":"search","project":"'"$KEYDIR"'","id":"comma-kw"' "$TROOT/log.jsonl"
+# Past TIPS_LOG_MAX bytes the log rotates to log.1.jsonl.
+OLD=$(wc -l <"$TROOT/log.jsonl")
+OUT=$(TIPS_LOG_MAX=10 "$SCRIPT" "$TP" tips search "comma message" 2>&1)
+assert "log rotates past TIPS_LOG_MAX" [ "$(wc -l <"$TROOT/log.1.jsonl")" -eq "$OLD" ] && [ "$(wc -l <"$TROOT/log.jsonl")" -eq 1 ]
 
 # Cites are checked in the session's checkout: a worktree, not the main repo.
 C2=$(git -C "$TP" rev-parse --short HEAD)
@@ -547,7 +550,11 @@ EOF
     >"$D/_tips/_global/g1.md"
   printf 'no frontmatter\n' >"$D/_tips/home~gone/raw.md"
   printf -- '---\ntitle: x\n---\n' | tee "$D/_tips/home~app/Bad Name.md" >"$D/_tips/home~app/.hidden.md"
-  printf '{"event":"search"}\n' >"$D/_tips/log.jsonl"
+  { printf '{"event":"search"}\nnot json\n'
+    printf '{"ts":"2026-09-01T10:00:00+0300","event":"hook","project":"home~app","id":"tip,g1,nope","hits":3}\n'
+    printf '{"ts":"2026-09-03T10:00:00+0300","event":"show","project":"home~app","id":"tip","hits":0}\n'
+  } >"$D/_tips/log.jsonl"
+  printf '{"ts":"2026-08-01T10:00:00+0300","event":"prompt-hook","project":"home~other","id":"tip","hits":1}\n' >"$D/_tips/log.1.jsonl"
 
   OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --json 2>&1) || fail "handoffs --json failed"
   # jcheck EXPR MSG: EXPR is Python over d (the JSON) and t (task by name).
@@ -571,6 +578,9 @@ EOF
   # tips: TT maps "slug/id" to the tip.
   TT='{x["slug"] + "/" + x["id"]: x for x in d["tips"]}'
   jcheck 'sorted('"$TT"') == ["_global/g1", "home~app/tip", "home~gone/raw"]' "tips: bad names, dot files and log.jsonl are skipped"
+  jcheck "$TT"'["home~app/tip"]["stats"] == {"offered": 1, "opened": 1, "last": "2026-09-03T10:00:00+0300"}' "tip stats count the project's events, old log too"
+  jcheck "$TT"'["_global/g1"]["stats"] == {"offered": 1, "last": "2026-09-01T10:00:00+0300"}' "an event from any project counts for a global tip"
+  jcheck "$TT"'["home~gone/raw"]["stats"] == {}' "a tip without events has empty stats"
   jcheck '(lambda t: t["title"] == "a tip" and t["status"] == "active" and t["level"] == "project" and t["body"] == "")('"$TT"'["home~app/tip"])' "tip without status is active"
   jcheck '(lambda t: t["level"] == "global" and t["status"] == "refuted" and t["env"] == "termux" and t["keywords"] == "a, \"b, c\"" and t["body"] == "Tip: body")('"$TT"'["_global/g1"])' "global tip with CRLF and fields"
   jcheck '(lambda t: t["title"] == "raw" and t["body"] == "no frontmatter")('"$TT"'["home~gone/raw"])' "tip without frontmatter: id as title"

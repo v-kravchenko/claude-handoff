@@ -13,6 +13,15 @@ All notable changes to this project are documented here. The format follows
 - `handoffs service install|uninstall|restart|status`: optional user service
   (systemd `--user` or launchd) that keeps the dashboard running;
   `install.sh` restarts it after an update and removes it on uninstall.
+- Tip usage on the dashboard: each tip shows how often it was offered (by a
+  hook or search), opened, verified and refuted; "opened N×" or "never
+  opened" (offered 5+ times) chips help to find useless tips.
+
+### Changed
+
+- The tips log (`_tips/log.jsonl`) keeps found ids instead of the search text,
+  so nothing needs masking (`tips_redact` is gone), and rotates to
+  `log.1.jsonl` past 256 KB (`TIPS_LOG_MAX`).
 
 ## [1.3.0] - 2026-09-28
 

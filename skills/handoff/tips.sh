@@ -3,7 +3,7 @@
 # Sourced by handoff.sh (uses ROOT, PROJECT, key, in_git, repo_root, valid_task).
 #   $HANDOFF_ROOT/_tips/<project-slug>/<id>.md   project tips
 #   $HANDOFF_ROOT/_tips/_global/<id>.md          global tips (this machine)
-#   $HANDOFF_ROOT/_tips/log.jsonl                search/show/verify events
+#   $HANDOFF_ROOT/_tips/log.jsonl                search/show/verify events (+ log.1.jsonl); the dashboard counts them
 # Tips live outside project dirs: every subdir of a project dir is a task.
 # The file name is the tip id. Search sees the current project and global only.
 
@@ -51,18 +51,18 @@ json_str() {
   printf '"%s"' "$s"
 }
 
-# Masks likely secrets (key=value after a secret-ish name, long tokens).
-tips_redact() {
-  sed -E 's/([Aa]uthorization|[Bb]earer|[Tt]oken|[Pp]assw(or)?d|[Ss]ecret|[Aa]pi[_-]?[Kk]ey)([^[:alnum:]]{1,3})[^[:space:]"'"'"']+/\1\3***/g; s/[A-Za-z0-9_+=-]{24,}/***/g'
-}
-
-# tips_log EVENT [ID] [QUERY] [HITS]; QUERY is redacted.
+# tips_log EVENT [IDS] [HITS]: IDS is a comma list. No query text is kept.
+# The dashboard counts these events per tip (offered, opened, verified...).
+# Past TIPS_LOG_MAX bytes the log moves to log.1.jsonl (one old copy).
 tips_log() {
   tips_init
   mkdir -p "$TIPS_ROOT" 2>/dev/null || return
-  printf '{"ts":"%s","event":"%s","project":%s,"id":%s,"query":%s,"hits":%s}\n' \
+  local log=$TIPS_ROOT/log.jsonl size
+  size=$(wc -c <"$log" 2>/dev/null) || size=0
+  ((size > ${TIPS_LOG_MAX:-262144})) && mv -f "$log" "$TIPS_ROOT/log.1.jsonl" 2>/dev/null
+  printf '{"ts":"%s","event":"%s","project":%s,"id":%s,"hits":%s}\n' \
     "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$1" "$(json_str "$TIPS_SLUG")" \
-    "$(json_str "${2:-}")" "$(json_str "$(tips_redact <<<"${3:-}")")" "${4:-0}" >>"$TIPS_ROOT/log.jsonl" 2>/dev/null
+    "$(json_str "${2:-}")" "${3:-0}" >>"$log" 2>/dev/null
 }
 
 # set_field FILE KEY VALUE: replaces KEY in the frontmatter or adds it.
@@ -208,7 +208,7 @@ tips_search() {
   [[ -n ${q// /} ]] || { echo "usage: tips search [--error] WORDS"; return; }
   out=$(tips_score "$mode" "$q")
   n=$(grep -c . <<<"$out")
-  tips_log search "" "$q" "$n"
+  tips_log search "$(cut -f3 <<<"$out" | paste -sd, -)" "$n"
   if [[ -z $out ]]; then echo "(no tips match: $q)"; return; fi
   echo "## tips (unverified: run a tip's Verify step before relying on it)"
   awk -F '\t' '{ printf "%s | %s | %s\n", $3, $2, $4 }' <<<"$out"
@@ -350,7 +350,7 @@ tips_hook() {
   [[ -n $out ]] || return
   n=$(grep -c . <<<"$out")
   # Error text is not logged: it may hold secrets. The matched ids are.
-  tips_log hook "$(cut -f3 <<<"$out" | paste -sd, -)" "" "$n"
+  tips_log hook "$(cut -f3 <<<"$out" | paste -sd, -)" "$n"
   text="claude-handoff: $n unverified tip(s) may match this error:"$'\n'
   text+=$(awk -F '\t' '{ printf "- %s (%s): %s\n", $3, $2, $4 }' <<<"$out")
   text+=$'\n'"Before acting on one, run /tips show <id>, then its Verify step, then /tips verified <id> or /tips refuted <id> <why>."
@@ -383,7 +383,7 @@ tips_prompt_hook() {
   fi
   n=$(grep -c . <<<"$out")
   # The prompt is not logged: it may hold secrets. The matched ids are.
-  tips_log prompt-hook "$(cut -f3 <<<"$out" | paste -sd, -)" "" "$n"
+  tips_log prompt-hook "$(cut -f3 <<<"$out" | paste -sd, -)" "$n"
   text="claude-handoff: $n unverified tip(s) may be relevant to this request:"$'\n'
   text+=$(awk -F '\t' '{ printf "- %s (%s): %s\n", $3, $2, $4 }' <<<"$out")
   text+=$'\n'"If one applies, run /tips show <id> and its Verify step before relying on it."

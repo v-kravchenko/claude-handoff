@@ -280,7 +280,7 @@ Handoffs are plain Markdown files stored outside your repositories:
 ~/.claude/handoffs/_tips/
 ├── _global/<id>.md                 # global tips (this machine)
 ├── <project-slug>/<id>.md          # project tips
-└── log.jsonl                       # search, show, verified and refuted events (secrets masked)
+└── log.jsonl                       # tip events for the dashboard stats (no query text); rotated to log.1.jsonl
 ```
 
 - The **project** is Claude Code's project directory (`$CLAUDE_PROJECT_DIR`).
@@ -309,6 +309,7 @@ archive.
 | `HANDOFF_ROOT` | `${CLAUDE_CONFIG_DIR:-~/.claude}/handoffs` | Where handoffs are stored. |
 | `HANDOFF_KEEP` | `10` | Handoffs kept per task (a positive integer; anything else means 10). Older ones are deleted when you save. |
 | `HANDOFF_PORT` | `8765` | Default port of the `handoffs` dashboard. |
+| `TIPS_LOG_MAX` | `262144` | Size in bytes after which the tips log moves to `log.1.jsonl`. |
 | `HANDOFF_BIN_DIR` | `~/.local/bin` (`$PREFIX/bin` on Termux) | Where `install.sh` puts `handoffs`. |
 | `HANDOFF_REF` | `main` | Branch or tag the piped install script fetches. |
 | `HANDOFF_REPO` | `https://github.com/v-kravchenko/claude-handoff` | Repository the piped install script fetches (a fork or a local `file://` path). |

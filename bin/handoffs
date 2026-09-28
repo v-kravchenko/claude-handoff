@@ -393,7 +393,44 @@ def collect_tips(root):
                         "body": "\n".join(lines[start:]).strip("\n"), "file": path,
                         "modified": datetime.datetime.fromtimestamp(os.path.getmtime(path)).astimezone().isoformat()})
             tips.append(tip)
+    stats = tip_stats(root, {(t["slug"], t["id"]) for t in tips})
+    for t in tips:
+        t["stats"] = stats.get((t["slug"], t["id"]), {})
     return tips
+
+
+OFFERED = {"hook", "prompt-hook", "search"}  # the tip was listed to the agent
+STAT_KEYS = {"show": "opened", "verified": "verified", "refuted": "refuted"}
+
+
+def tip_stats(root, known):
+    """Counts log events per tip: offered, opened, verified, refuted, last (ts)."""
+    stats = {}
+    for name in ("log.1.jsonl", "log.jsonl"):
+        try:
+            with open(os.path.join(root, TIPS, name), encoding="utf-8") as fh:
+                lines = fh.readlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                ev = json.loads(line)
+                kind, slug, ts = ev["event"], ev.get("project", ""), ev.get("ts", "")
+                ids = [i for i in str(ev.get("id") or "").split(",") if i]
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+            key = "offered" if kind in OFFERED else STAT_KEYS.get(kind)
+            if not key:
+                continue
+            for tid in ids:
+                # The event's project is the session's; the tip may be global.
+                tip = (slug, tid) if (slug, tid) in known else (GLOBAL, tid)
+                if tip not in known:
+                    continue
+                s = stats.setdefault(tip, {})
+                s[key] = s.get(key, 0) + 1
+                s["last"] = max(s.get("last", ""), ts)
+    return stats
 
 
 def delete_tip(root, slug, tid):
@@ -405,7 +442,7 @@ def delete_tip(root, slug, tid):
     except OSError as e:
         return str(e)
     event = {"ts": datetime.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"),
-             "event": "deleted", "project": slug, "id": tid, "query": "", "hits": 0, "via": "dashboard"}
+             "event": "deleted", "project": slug, "id": tid, "hits": 0, "via": "dashboard"}
     try:
         with open(os.path.join(root, TIPS, "log.jsonl"), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -982,6 +1019,7 @@ body.noscroll { overflow: hidden; }
 .chips:empty { display: none; }
 .chip { font-size: 12px; line-height: 20px; border-radius: 10px; padding: 0 8px; color: var(--muted);
   background: var(--code); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.chip.used { color: var(--ok); background: var(--addbg); }
 .chip.warn, .chip.archived { color: var(--arch); background: var(--archbg); }
 .chip.missing { color: var(--warn); background: transparent; box-shadow: inset 0 0 0 1px var(--warn); }
 /* Git context as breadcrumb segments: branch > commit. */
@@ -1602,7 +1640,19 @@ function tipChips(tip) {
   if (tip.env) cs.appendChild(chip("env: " + tip.env));
   if (tip.origin === "web") cs.appendChild(chip("from web", "", "learned from web pages, issues or foreign code"));
   if (tip.last_verified) cs.appendChild(chip("verified " + tip.last_verified));
+  const s = tip.stats || {};
+  if (s.opened) cs.appendChild(chip("opened " + s.opened + "×", "used", usage(s)));
+  else if ((s.offered || 0) >= NEVER_OPENED) cs.appendChild(chip("never opened", "warn",
+    usage(s) + "; its keywords may be too broad"));
+  else if (s.offered) cs.appendChild(chip("offered " + s.offered + "×", "", usage(s)));
   return cs;
+}
+// Usage from the tips log: offered = listed by a hook or search, opened = /tips show.
+const NEVER_OPENED = 5;
+function usage(s) {
+  const n = (k, w) => (s[k] || 0) + " " + w;
+  return [n("offered", "offered"), n("opened", "opened"), n("verified", "verified"), n("refuted", "refuted")].join(", ") +
+    (s.last ? "; last " + s.last.slice(0, 10) : "");
 }
 function tipCard(tip, where, h) {
   const c = el("div", "item" + (tip.status === "active" ? "" : " dim"));
@@ -1622,6 +1672,7 @@ function tipPanel(tip, body) {
   meta("When", tip.when);
   meta("Keywords", tip.keywords);
   meta("Refuted", tip.refuted);
+  meta("Usage", tip.stats && tip.stats.last ? usage(tip.stats) : "");
   meta("Superseded by", tip.superseded_by);
   const row = el("div", "actions");
   row.appendChild(el("div", "file", tilde(tip.file)));
