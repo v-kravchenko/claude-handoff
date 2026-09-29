@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-09-29
+
 ### Breaking
 
 - A task is one file, `<project>/<task>.md` (archived:
@@ -382,6 +384,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.5.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.3...v1.5.0
 [1.4.3]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.1...v1.4.2

@@ -329,7 +329,7 @@ A task is one note, `<task>.md`, whose dates are in its frontmatter
 (`created`). `/handoff` moves the previous one to `_history/<task>/` before
 writing the new one; `done` and `restore` move only `<task>.md`, and a
 rename on the dashboard renames the file and its history. Handoffs saved
-before 1.6.0 (`<task>/<stamp>.md`) are converted the first time a script or
+before 1.5.1 (`<task>/<stamp>.md`) are converted the first time a script or
 the dashboard opens the project.
 
 - The **project** is the name of Claude Code's project directory
@@ -357,7 +357,7 @@ the dashboard opens the project.
   to the project directory (`.` for itself), so `/pickup` finds it after
   the project moved; handoffs saved before 1.5.0 have absolute paths.
   `branch` and `commit` are of the repository `dir` is in. There is no
-  `repo` field since 1.6.0: the project directory is the repository (or
+  `repo` field since 1.5.1: the project directory is the repository (or
   none); older handoffs keep theirs, and it is ignored.
 - The model writes the summary; `skills/handoff/handoff.sh` handles storage,
   task listing, pruning, archiving and the staleness report. The script

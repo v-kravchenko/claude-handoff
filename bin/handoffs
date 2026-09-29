@@ -34,7 +34,7 @@ import time
 import urllib.parse
 import webbrowser
 
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 ARCHIVE = "_archive"
 HISTORY = "_history"  # older handoffs: <slug>/_history/<task>/<stamp>.md
 TIPS = "_tips"  # tips store (skills/handoff/tips.sh), not a project
