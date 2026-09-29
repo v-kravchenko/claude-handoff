@@ -60,7 +60,7 @@ has "(no tasks)"
 run "$P" meta
 lacks "repo:" "no repo field: the project is the repository"
 has "dir: ." "dir is relative to the project"
-has "host: "
+lacks "host:" "no host field"
 
 run "$P" new "Bad Name"
 has "INVALID TASK"
@@ -113,6 +113,13 @@ n=$(find "$D" -name '*.md' | wc -l | tr -d ' ')
 assert "prune keeps HANDOFF_KEEP-1 older files (got $n)" [ "$n" -eq 2 ]
 assert "prune drops the oldest" [ ! -e "$D/2000-01-05_000000.md" ] && [ -z "$(find "$D" -name '2000-*')" ]
 assert "prune keeps the newest handoff" [ -f "$F2" ]
+# Same `created`: <stamp>_1.md is newer than <stamp>.md in any locale.
+D2=$K/_history/collide
+mkdir -p "$D2"
+for f in 2000-02-01_000000.md 2000-02-01_000000_1.md; do : >"$D2/$f"; done
+LANG=uk_UA.UTF-8 LC_ALL=uk_UA.UTF-8 HANDOFF_KEEP=2 run "$P" prune collide
+assert "prune keeps <stamp>_1.md, the newer of two with one stamp" [ -f "$D2/2000-02-01_000000_1.md" ] && [ ! -e "$D2/2000-02-01_000000.md" ]
+rm -rf "$D2"
 
 # --- done / archive ------------------------------------------------------
 run "$P" "done" beta
@@ -301,20 +308,6 @@ run "$S" cancel fast
 has "kept: @fast" "cancel with the task's file in place changes nothing"
 run "$S" cancel nope
 has "NO TASK: @nope"
-
-# --- migration from the 1.5.0 layout ----------------------------------------
-M="$TMP/migr"; mkdir -p "$M"
-MK="$HANDOFF_ROOT/migr"
-mkdir -p "$MK/old/" "$MK/_archive/gone"
-printf -- '---\ncreated: 2026-09-01 10:00:00 +0300\ntitle: v1\n---\n' >"$MK/old/2026-09-01_100000.md"
-printf -- '---\ntitle: v2 no created\n---\n' >"$MK/old/2026-09-02_110000.md"
-printf -- '---\ntitle: g\n---\n' >"$MK/_archive/gone/2026-08-01_090000.md"
-run "$M" tasks
-has "@old | v2 no created | 2026-09-02 11:00" "migration keeps the file name's time without created"
-has "@gone | g | 2026-08-01 09:00 | archived" "migration converts archived tasks"
-assert "migration: the newest file is the task's file" grep -q "title: v2" "$MK/old.md"
-assert "migration: older files go to the history" [ -f "$MK/_history/old/2026-09-01_100000.md" ]
-assert "migration removes the old directories" [ ! -e "$MK/old" ] && [ ! -e "$MK/_archive/gone" ]
 
 # --- restore command -----------------------------------------------------
 run "$S" restore @spaced
@@ -674,13 +667,13 @@ if ! command -v python3 >/dev/null 2>&1; then
   echo "skip: dashboard tests (no python3)"
 else
   D="$TMP/dash"
-  mkdir -p "$D/home~app/alpha" "$D/home~app/empty" "$D/home~app/_archive/old" "$D/other/bare" "$D/.hidden/x"
-  cat >"$D/home~app/alpha/2026-09-25_101500.md" <<'EOF'
+  mkdir -p "$D/home~app/_history/alpha" "$D/home~app/empty" "$D/home~app/_archive" "$D/other" "$D/.hidden"
+  cat >"$D/home~app/_history/alpha/2026-09-25_101500.md" <<'EOF'
 ---
 title: first
 ---
 EOF
-  cat >"$D/home~app/alpha/2026-09-26_173557.md" <<EOF
+  cat >"$D/home~app/alpha.md" <<EOF
 ---
 project: $P
 repo: none
@@ -713,12 +706,12 @@ Second paragraph is not shown.
 - nope
 EOF
   printf -- '---\nproject: /no/such/dir\ntitle: archived one\nfrom: alpha\n---\n## Goal\n%s\n' "$(printf 'word %.0s' {1..80})" \
-    >"$D/home~app/_archive/old/2026-09-01_080000.md"
-  printf 'no frontmatter here\n' >"$D/other/bare/2026-09-02_090000.md"
-  printf -- '---\ntitle: hidden\n---\n' >"$D/.hidden/x/2026-09-03_090000.md"
-  mkdir -p "$D/home~app/quoted" && printf -- '---\ntitle: "Fix: \\"a\\""\n---\n## Goal\ng\n' >"$D/home~app/quoted/2026-09-02_080000.md"
-  mkdir -p "$D/q1~api/t" && printf 'First API\n' >"$D/q1~api/_project.md"
-  printf -- '---\ntitle: q\n---\n' >"$D/q1~api/t/2026-09-02_090000.md"
+    >"$D/home~app/_archive/old.md"; touch -t 202609010800 "$D/home~app/_archive/old.md"
+  printf 'no frontmatter here\n' >"$D/other/bare.md"; touch -t 202609020900 "$D/other/bare.md"
+  printf -- '---\ntitle: hidden\n---\n' >"$D/.hidden/x.md"
+  printf -- '---\ntitle: "Fix: \\"a\\""\n---\n## Goal\ng\n' >"$D/home~app/quoted.md"; touch -t 202609020800 "$D/home~app/quoted.md"
+  mkdir -p "$D/q1~api" && printf 'First API\n' >"$D/q1~api/_project.md"
+  printf -- '---\ntitle: q\n---\n' >"$D/q1~api/t.md"; touch -t 202609020900 "$D/q1~api/t.md"
   mkdir -p "$D/_tips/home~app" && printf -- '---\ntitle: a tip\n---\n' >"$D/_tips/home~app/tip.md"
   mkdir -p "$D/_tips/_global" "$D/_tips/home~gone"
   printf -- '---\ntitle: "A: b"\nkeywords: [x, "y: z"]\n---\n' >"$D/_tips/home~app/qtip.md"
@@ -777,18 +770,17 @@ EOF
   GC=$(git -C "$G" rev-parse HEAD)
   git -C "$G" commit -q --allow-empty -m two
   git -C "$G/nested" init -q && git -C "$G/nested" commit -q --allow-empty -m n
-  mkdir -p "$D/gitproj/repo" "$D/gitproj/nest"
+  mkdir -p "$D/gitproj"
   printf -- '---\nproject: %s\ndir: .\nbranch: main\ncommit: %s\ntitle: r\n---\n' "$G" "$GC" \
-    >"$D/gitproj/repo/2026-09-04_090000.md"
+    >"$D/gitproj/repo.md"
   printf -- '---\nproject: %s\ndir: nested\nbranch: main\ncommit: %s\ntitle: n\nfrom: @Bad\n---\n' "$G" "$GC" \
-    >"$D/gitproj/nest/2026-09-04_090000.md"
+    >"$D/gitproj/nest.md"
   # A worktree: project and dir are the worktree.
   W="$TMP/gitwt"
   git -C "$G" worktree add -q -b wt "$W" 2>/dev/null
   W=$(cd "$W" && pwd -P)
-  mkdir -p "$D/gitproj/wt"
   printf -- '---\nproject: %s\ndir: %s\nrepo: %s\nbranch: wt\ncommit: %s\ntitle: w\n---\n' "$W" "$W" "$G" "$GC" \
-    >"$D/gitproj/wt/2026-09-04_090000.md"
+    >"$D/gitproj/wt.md"
   OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --json 2>&1)
   jcheck 't["repo"]["git"] and t["wt"]["git"] and not t["nest"]["git"] and not t["alpha"]["git"]' \
     "git info only for the project repo or its worktree"
@@ -925,7 +917,6 @@ EOF
   assert "rename updates from: in its forks" grep -qx 'from: beta' "$D/home~app/_archive/older.md"
   assert "done/restore round trip keeps both versions" [ "$(find "$D/home~app/_history/beta" -name '*.md' | wc -l | tr -d ' ')" -eq 1 ]
   assert "restore removes the archive entry" [ ! -e "$D/home~app/_archive/alpha.md" ]
-  assert "the dashboard migrates the old layout" [ ! -d "$D/other/bare" ] && [ -f "$D/other/bare.md" ]
 
   # --read-only: no token, POST refused.
   HANDOFF_ROOT="$D" python3 "$DASH" --no-open --read-only --host 0.0.0.0 --port "$PORT" >"$TMP/dash.log" 2>&1 &

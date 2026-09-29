@@ -124,7 +124,9 @@ stamp() {
   if [[ $c =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})\ ([0-9]{2}):([0-9]{2}):([0-9]{2}) ]]; then
     echo "${BASH_REMATCH[1]}_${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}"
   else
-    date -r "$1" +%Y-%m-%d_%H%M%S 2>/dev/null || echo 0000-00-00_000000
+    # GNU `date -r FILE`; BSD/macOS `-r` takes epoch seconds.
+    date -r "$1" +%Y-%m-%d_%H%M%S 2>/dev/null ||
+      date -r "$(stat -f %m "$1" 2>/dev/null)" +%Y-%m-%d_%H%M%S 2>/dev/null || echo 0000-00-00_000000
   fi
 }
 
@@ -159,7 +161,7 @@ task_names() {
     [[ -f $f ]] || continue
     t=$(basename "$f" .md); valid_task "$t" || continue
     echo "$(stamp "$f") $t"
-  done | sort -r | cut -d' ' -f2
+  done | LC_ALL=C sort -r | cut -d' ' -f2
 }
 
 # First line of a handoff's ## State section, without a list marker.
@@ -204,7 +206,6 @@ resolve() {
 
 cmd_meta() {
   echo "project: $(project_dir)"
-  echo "host: $(hostname 2>/dev/null || uname -n)"
   echo "dir: $(relpath "$WORKDIR")"
   if in_git; then
     echo "branch: $(branch)"
@@ -275,7 +276,7 @@ cmd_cancel() {
 cmd_prune() {
   local t=${1#@}
   valid_task "$t" || return
-  handoffs "$t" | sort -r | tail -n +"$KEEP" | while read -r f; do rm -f -- "$f"; done
+  handoffs "$t" | LC_ALL=C sort -r | tail -n +"$KEEP" | while read -r f; do rm -f -- "$f"; done
   rmdir -- "$KEY/$HISTORY/$t" "$KEY/$HISTORY" 2>/dev/null
 }
 
@@ -283,30 +284,6 @@ cmd_prune() {
 move_task() {
   [[ -f $2 ]] && { to_history "$2" "$3" >/dev/null || return; }
   mkdir -p "$(dirname "$2")" && mv -- "$1" "$2"
-}
-
-# The layout of 1.5.0 and older, <key>/<task>/<stamp>.md and
-# <key>/_archive/<task>/<stamp>.md: the newest file becomes the task's file,
-# the others its history.
-migrate() {
-  local d t pre f last
-  for pre in "" "$ARCHIVE/"; do
-    for d in "$KEY/$pre"*/; do
-      [[ -d $d ]] || continue
-      t=$(basename "$d"); valid_task "$t" || continue
-      last=""
-      for f in "$d"*.md; do [[ -f $f ]] && last=$f; done
-      [[ -n $last ]] || continue
-      # A handoff without `created` keeps its file name's time (YYYY-MM-DD_HHMMSS).
-      for f in "$d"*.md; do
-        [[ $(basename "$f") =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})_([0-9]{4})([0-9]{2}) ]] &&
-          touch -t "${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}.${BASH_REMATCH[5]}" "$f" 2>/dev/null
-      done
-      for f in "$d"*.md; do [[ $f == "$last" ]] || to_history "$f" "$t" >/dev/null; done
-      move_task "$last" "$KEY/$pre$t.md" "$t"
-      rmdir -- "$d" 2>/dev/null
-    done
-  done
 }
 
 cmd_done() {
@@ -468,7 +445,7 @@ fi
 # there are tips to search (tips_init).
 case "$CMD ${3:-}" in
   meta\ *|git\ *|"tips hook"|"tips prompt-hook") ;;
-  *) key >/dev/null; migrate ;;
+  *) key >/dev/null ;;
 esac
 
 case "$CMD" in

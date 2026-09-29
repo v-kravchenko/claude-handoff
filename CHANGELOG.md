@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-09-29
+
+### Changed
+
+- `--host` with a non-loopback address makes the dashboard read-only.
+- Handoffs have no `host` and `session` fields; the ones in older handoffs
+  are ignored.
+- The 1.5.0 layout (`<task>/<stamp>.md`) is no longer converted; move
+  such handoffs by hand.
+
+### Fixed
+
+- `handoff.sh prune` and the task list sort in the C locale, so a handoff
+  with the same `created` as another is no longer pruned by mistake.
+- The file-time fallback of a handoff without `created` works on macOS.
+- The tips prompt hook creates its seen-files directory private (`0700`).
+- `references/tips.md` describes the `source:` line that `tips new` writes.
+
 ## [1.5.1] - 2026-09-29
 
 ### Breaking
@@ -384,6 +402,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.5.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.3...v1.5.0
 [1.4.3]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.2...v1.4.3

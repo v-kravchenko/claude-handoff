@@ -40,7 +40,7 @@ keywords: [<comma-separated; exact error messages and any item with `: `, `,` or
 env: <only if environment-specific: the value from `tips new`>
 cites: <optional: path[:line]@commit, comma-separated>
 origin: <failure | discovery | user | web>
-source: <source from `tips new`> task=<task> session=<session from the handoff metadata>
+source: <source from `tips new`>
 status: active
 ---
 Tip: <the rule plus a concrete anchor: file, command, version>

@@ -411,7 +411,7 @@ tips_prompt_hook() {
     !($3 in s)' | head -n 3)
   [[ -n $out ]] || return
   if [[ -n $sid ]]; then
-    mkdir -p "${f%/*}" 2>/dev/null && cut -f3 <<<"$out" >>"$f" 2>/dev/null
+    (umask 077; mkdir -p "${f%/*}") 2>/dev/null && cut -f3 <<<"$out" >>"$f" 2>/dev/null
   fi
   n=$(grep -c . <<<"$out")
   # The prompt is not logged: it may hold secrets. The matched ids are.

@@ -272,7 +272,7 @@ date.
 | `--port N` | Port to listen on (default `$HANDOFF_PORT` or `8765`); if it is busy, the next nine are tried. `0` picks any free port. |
 | `--host ADDR` | Address to listen on (default `127.0.0.1`). |
 | `--no-open` | Only print the URL. |
-| `--read-only` | Hide the *Done*, *Restore*, *Rename* and *Delete* buttons and refuse changes. |
+| `--read-only` | Hide the *Done*, *Restore*, *Rename* and *Delete* buttons and refuse changes. Always on when `--host` is not a loopback address. |
 | `--background` | Start detached, print the URL and return; a second call reuses the running one. |
 | `--stop` | Stop the dashboard started with `--background`. |
 | `--json` | Print the task data as JSON and exit. |
@@ -328,9 +328,7 @@ machine keeps its logs in its own `HANDOFF_STATE`.
 A task is one note, `<task>.md`, whose dates are in its frontmatter
 (`created`). `/handoff` moves the previous one to `_history/<task>/` before
 writing the new one; `done` and `restore` move only `<task>.md`, and a
-rename on the dashboard renames the file and its history. Handoffs saved
-before 1.5.1 (`<task>/<stamp>.md`) are converted the first time a script or
-the dashboard opens the project.
+rename on the dashboard renames the file and its history.
 
 - The **project** is the name of Claude Code's project directory
   (`$CLAUDE_PROJECT_DIR`, the directory the session was opened in),
@@ -430,7 +428,8 @@ Set them in your shell profile or in the `env` block of
   local, which blocks DNS-rebinding attacks from web pages. Its only changes
   are *Done*, *Restore*, *Rename* and deleting a tip: they need a random token that is embedded in the
   page at startup and sent in a custom header, so other web pages cannot
-  trigger them. `--read-only` turns them off. Other programs on the same
+  trigger them. `--read-only` turns them off; it is forced on when `--host` is
+  not a loopback address. Other programs on the same
   machine (on Android, other apps) are not web pages: while the dashboard
   runs they can read it and, unless it is `--read-only`, also use its
   buttons.

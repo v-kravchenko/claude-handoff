@@ -136,7 +136,6 @@ resumed (the parent) and saves both, so each continues in its own session.
 <metadata lines from above>
 task: <task from step 3>
 from: <parent task, without @; only for a fork>
-session: ${CLAUDE_SESSION_ID}
 title: "<short task name>"
 ---
 

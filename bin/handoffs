@@ -34,7 +34,7 @@ import time
 import urllib.parse
 import webbrowser
 
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 ARCHIVE = "_archive"
 HISTORY = "_history"  # older handoffs: <slug>/_history/<task>/<stamp>.md
 TIPS = "_tips"  # tips store (skills/handoff/tips.sh), not a project
@@ -344,34 +344,6 @@ def move_task(root, slug, task, archive):
     return None
 
 
-def migrate(root):
-    """The layout of 1.5.0 and older, <slug>/<task>/<stamp>.md and
-    <slug>/_archive/<task>/<stamp>.md: the newest file becomes the task's
-    file, the others its history (like handoff.sh)."""
-    for slug in projects(root):
-        base = os.path.join(root, slug)
-        for d in (base, os.path.join(base, ARCHIVE)):
-            for task in subdirs(d):
-                files = md_files(os.path.join(d, task))
-                if not TASK_RE.fullmatch(task) or not files:
-                    continue
-                try:
-                    for f in files:  # a handoff without `created` keeps its file name's time
-                        try:
-                            t = time.mktime(time.strptime(f[:17], "%Y-%m-%d_%H%M%S"))
-                            os.utime(os.path.join(d, task, f), (t, t))
-                        except ValueError:
-                            pass
-                    for f in files[:-1]:
-                        to_history(root, slug, task, os.path.join(d, task, f))
-                    if os.path.exists(os.path.join(d, task + ".md")):
-                        to_history(root, slug, task, os.path.join(d, task + ".md"))
-                    os.replace(os.path.join(d, task, files[-1]), os.path.join(d, task + ".md"))
-                    os.rmdir(os.path.join(d, task))
-                except OSError:
-                    pass
-
-
 TASK_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
 
 
@@ -451,7 +423,6 @@ def projects(root):
 
 
 def collect(root):
-    migrate(root)
     tasks = []
     for slug in projects(root):
         base = os.path.join(root, slug)
@@ -1025,6 +996,9 @@ def main(argv=None):
         Handler.allowed_hosts = LOOPBACK | {host.lower()}
         Handler.any_ip = host in ("0.0.0.0", "::")
         print("warning: listening on %s; other machines may reach the dashboard" % host, file=sys.stderr)
+        if not args.read_only:
+            args.read_only = True
+            print("warning: not a loopback address, so the dashboard is read-only", file=sys.stderr)
     if not args.read_only:
         Handler.token = secrets.token_urlsafe(24)
     drop_legacy()

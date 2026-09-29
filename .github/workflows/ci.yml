@@ -17,6 +17,10 @@ jobs:
         run: shellcheck -x skills/handoff/handoff.sh skills/handoff/tips.sh install.sh tests/test.sh
       - name: python syntax
         run: python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' bin/handoffs
+      - name: dashboard JavaScript syntax
+        run: |
+          python3 tests/page_js.py "$RUNNER_TEMP/page.js"
+          node --check "$RUNNER_TEMP/page.js"
       - name: validate JSON
         run: |
           jq empty .claude-plugin/plugin.json
