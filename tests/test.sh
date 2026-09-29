@@ -58,7 +58,7 @@ run "$P" tasks
 has "(no tasks)"
 
 run "$P" meta
-has "repo: none"
+lacks "repo:" "no repo field: the project is the repository"
 has "dir: ." "dir is relative to the project"
 has "host: "
 
@@ -68,7 +68,8 @@ run "$P" new _archive
 has "INVALID TASK" "_archive is reserved"
 
 F1=$(save "$P" alpha "Alpha task")
-case $F1 in "$HANDOFF_ROOT"/*/alpha/*.md) ok ;; *) fail "new returns a path under the task dir: $F1" ;; esac
+K=$HANDOFF_ROOT/plain
+assert "new returns the task's file: $F1" [ "$F1" = "$K/alpha.md" ]
 
 run "$P" show
 has "task: alpha" "single task is shown without choosing"
@@ -77,8 +78,13 @@ has "## staleness"
 
 sleep 1
 F2=$(save "$P" alpha "Alpha task v2")
+assert "a save moves the previous handoff to the history" grep -q "title: Alpha task$" "$K/_history/alpha/"*.md
 run "$P" new alpha
-has "latest: $F2" "new reports the latest handoff"
+has "latest: $K/_history/alpha/" "new moves the task's file to the history and reports it"
+assert "new frees the task's file" [ ! -e "$F2" ]
+run "$P" new alpha
+has "latest: $K/_history/alpha/" "new after an unwritten save reports the newest history file"
+F2=$(save "$P" alpha "Alpha task v2")
 
 save "$P" beta "Beta task" >/dev/null
 run "$P" show
@@ -100,11 +106,12 @@ run "$P" stale "$TMP/nope.md"
 has "NO FILE"
 
 # --- prune ---------------------------------------------------------------
-D=$(dirname "$F1")
+D=$K/_history/alpha
 for i in 1 2 3 4 5; do : >"$D/2000-01-0${i}_000000.md"; done
 HANDOFF_KEEP=3 run "$P" prune alpha
 n=$(find "$D" -name '*.md' | wc -l | tr -d ' ')
-assert "prune keeps HANDOFF_KEEP files (got $n)" [ "$n" -eq 3 ]
+assert "prune keeps HANDOFF_KEEP-1 older files (got $n)" [ "$n" -eq 2 ]
+assert "prune drops the oldest" [ ! -e "$D/2000-01-05_000000.md" ] && [ -z "$(find "$D" -name '2000-*')" ]
 assert "prune keeps the newest handoff" [ -f "$F2" ]
 
 # --- done / archive ------------------------------------------------------
@@ -150,13 +157,13 @@ run "$P" show @nested
 has "fork of: @fixbtn (done $(date +%Y-%m-%d))" "the parent may be archived"
 run "$P" show @bogus
 lacks "fork of:" "an invalid from: is ignored"
-mv "$(dirname "$F2")" "$TMP/alpha.bak"
+mv "$F2" "$TMP/alpha.bak"
 run "$P" show @gamma
 has "fork of: @alpha (missing)" "a deleted parent is reported"
-mv "$TMP/alpha.bak" "$(dirname "$F2")"
+mv "$TMP/alpha.bak" "$F2"
 for t in nested bogus fixbtn gamma; do
   "$SCRIPT" "$P" "done" "$t" >/dev/null
-  rm -rf "$(dirname "$(dirname "$F2")")/_archive/$t"
+  rm -f "$K/_archive/$t.md"
 done
 
 # --- git repository ------------------------------------------------------
@@ -165,7 +172,6 @@ git init -q -b main . && git commit -q --allow-empty -m first
 
 cd "$G/sub" || exit 1
 run "$G" meta
-has "repo: ." "repo is relative to the project"
 has "branch: main"
 has "dir: sub" "dir is the cwd, not the project"
 
@@ -195,7 +201,7 @@ sed -i.bak "s/^commit: .*/commit: 0123456789abcdef0123456789abcdef01234567/" "$G
 run "$G" show @gtask
 has "WARNING: handoff commit" "missing commit is reported"
 
-sed -i.bak "s|^repo: .*|repo: $TMP/gone|" "$GF" && rm -f "$GF.bak"
+sed -i.bak "s|^dir: .*|dir: $TMP/gone|" "$GF" && rm -f "$GF.bak"
 run "$G" show @gtask
 has "no longer exists" "missing work dir is reported"
 
@@ -216,7 +222,7 @@ lacks "commits since" "non-git handoff has no git report"
 # --- paths with spaces ---------------------------------------------------
 S="$TMP/My Proj"; mkdir -p "$S"; cd "$S" || exit 1
 SF=$(save "$S" spaced "Spaced task")
-case $SF in */my-proj/spaced/*.md) ok ;; *) fail "project path with a space: $SF" ;; esac
+case $SF in */my-proj/spaced.md) ok ;; *) fail "project path with a space: $SF" ;; esac
 run "$S" show @spaced
 has "file: $SF" "show works in a project path with a space"
 
@@ -255,9 +261,11 @@ assert "handoff: documents fork" grep -q '^## Forking a task' "$SKILLS/handoff/S
 assert "pickup: shows forks" grep -qF '## forks' "$SKILLS/pickup/SKILL.md"
 
 # --- same-second saves -----------------------------------------------------
-A=$(save "$S" fast "One"); B=$(save "$S" fast "Two")
-assert "two saves in a row get different files" [ "$A" != "$B" ]
-assert "the first save is kept" grep -q "title: One" "$A"
+K=$(dirname "$SF")
+save "$S" fast "One" >/dev/null; save "$S" fast "Two" >/dev/null; B=$(save "$S" fast "Three")
+A=$(grep -l "title: One" "$K/_history/fast/"*.md)
+assert "saves in one second keep every handoff" [ "$(find "$K/_history/fast" -name '*.md' | wc -l)" -eq 2 ] && [ -n "$A" ]
+assert "the last save is the task's file" grep -q "title: Three" "$B"
 
 # --- HANDOFF_KEEP validation ---------------------------------------------
 HANDOFF_KEEP=0 run "$S" prune fast
@@ -269,10 +277,9 @@ assert "HANDOFF_KEEP=abc falls back to the default" [ -f "$A" ]
 # --- aborted save, reopening ----------------------------------------------
 run "$S" new empty
 run "$S" "done" empty
-has "no handoffs saved" "done on a task with no handoffs"
-K=$(dirname "$(dirname "$SF")")
-assert "no empty archive is created" [ ! -d "$K/_archive/empty" ]
-assert "the empty task dir is removed" [ ! -d "$K/empty" ]
+has "NO TASK: @empty" "done on a task with no handoffs"
+assert "no empty archive is created" [ ! -e "$K/_archive/empty.md" ]
+assert "new leaves no file behind" [ ! -e "$K/empty.md" ] && [ ! -e "$K/empty" ]
 
 run "$S" "done" spaced
 run "$S" new spaced
@@ -285,12 +292,36 @@ run "$S" show @spaced
 has "ARCHIVED: @spaced" "show of an archived task says so"
 lacks "mv " "show prints no shell command to restore"
 
+# --- cancel ----------------------------------------------------------------
+run "$S" new fast
+run "$S" cancel fast
+has "kept: @fast"
+assert "cancel puts the moved handoff back" grep -q "title: Three" "$K/fast.md"
+run "$S" cancel fast
+has "kept: @fast" "cancel with the task's file in place changes nothing"
+run "$S" cancel nope
+has "NO TASK: @nope"
+
+# --- migration from the 1.5.0 layout ----------------------------------------
+M="$TMP/migr"; mkdir -p "$M"
+MK="$HANDOFF_ROOT/migr"
+mkdir -p "$MK/old/" "$MK/_archive/gone"
+printf -- '---\ncreated: 2026-09-01 10:00:00 +0300\ntitle: v1\n---\n' >"$MK/old/2026-09-01_100000.md"
+printf -- '---\ntitle: v2 no created\n---\n' >"$MK/old/2026-09-02_110000.md"
+printf -- '---\ntitle: g\n---\n' >"$MK/_archive/gone/2026-08-01_090000.md"
+run "$M" tasks
+has "@old | v2 no created | 2026-09-02 11:00" "migration keeps the file name's time without created"
+has "@gone | g | 2026-08-01 09:00 | archived" "migration converts archived tasks"
+assert "migration: the newest file is the task's file" grep -q "title: v2" "$MK/old.md"
+assert "migration: older files go to the history" [ -f "$MK/_history/old/2026-09-01_100000.md" ]
+assert "migration removes the old directories" [ ! -e "$MK/old" ] && [ ! -e "$MK/_archive/gone" ]
+
 # --- restore command -----------------------------------------------------
 run "$S" restore @spaced
 has "restored: @spaced"
-n=$(find "$K/spaced" -name '*.md' | wc -l | tr -d ' ')
-assert "restore command brings back all handoffs (got $n)" [ "$n" -eq 2 ]
-assert "restore command removes the archive entry" [ ! -d "$K/_archive/spaced" ]
+assert "restore brings back the latest handoff" grep -q "title: Spaced again" "$K/spaced.md"
+assert "an older archived handoff went to the history" grep -q "title: Spaced task" "$K/_history/spaced/"*.md
+assert "restore command removes the archive entry" [ ! -e "$K/_archive/spaced.md" ]
 run "$S" restore spaced
 has "NO TASK: @spaced (not archived)" "restore of an active task is refused"
 run "$S" restore ../x
@@ -305,30 +336,30 @@ has "file: $C" "a bare word is a task even if such a file exists"
 # The key is the directory's name, wherever the directory is.
 mkdir -p "$TMP/m1/Same App" "$TMP/m2/deep/same-app" "$TMP/k/.Dot_x" "$TMP/k/a~b" "$TMP/k/ÄÖ"
 run "$TMP/m1/Same App" new t
-has "$HANDOFF_ROOT/same-app/t/" "the key is the lowercased directory name"
+has "$HANDOFF_ROOT/same-app/t.md" "the key is the lowercased directory name"
 run "$TMP/m2/deep/same-app" tasks
 has "project: @same-app" "the same name elsewhere is the same project"
 run "$TMP/k/.Dot_x" new t
-has "$HANDOFF_ROOT/dot_x/t/" "leading dots are dropped"
+has "$HANDOFF_ROOT/dot_x/t.md" "leading dots are dropped"
 run "$TMP/k/a~b" new t
-has "$HANDOFF_ROOT/a-b/t/" "other characters become -"
+has "$HANDOFF_ROOT/a-b/t.md" "other characters become -"
 run "$TMP/k/ÄÖ" new t
-has "$HANDOFF_ROOT/root/t/" "a name with nothing left is root"
+has "$HANDOFF_ROOT/root/t.md" "a name with nothing left is root"
 HANDOFF_ROOT="$TMP/r2" run / new t
-has "$TMP/r2/root/t/" "the filesystem root maps to root"
+has "$TMP/r2/root/t.md" "the filesystem root maps to root"
 OUT=$(env -u HANDOFF_ROOT XDG_DATA_HOME="$TMP/xdg-data" "$SCRIPT" "$TMP/k/a~b" new t)
-has "$TMP/xdg-data/claude-handoff/a-b/t/" "the default root is \$XDG_DATA_HOME/claude-handoff"
+has "$TMP/xdg-data/claude-handoff/a-b/t.md" "the default root is \$XDG_DATA_HOME/claude-handoff"
 OUT=$(env -u HANDOFF_ROOT -u XDG_DATA_HOME HOME="$TMP/h" "$SCRIPT" "$TMP/k/a~b" new t)
-has "$TMP/h/.local/share/claude-handoff/a-b/t/" "without XDG_DATA_HOME the root is ~/.local/share/claude-handoff"
+has "$TMP/h/.local/share/claude-handoff/a-b/t.md" "without XDG_DATA_HOME the root is ~/.local/share/claude-handoff"
 OUT=$(env -u HANDOFF_ROOT CLAUDE_CONFIG_DIR="$TMP/cfg" XDG_DATA_HOME="$TMP/xdg-data" "$SCRIPT" "$TMP/k/a~b" new t)
 lacks "$TMP/cfg" "CLAUDE_CONFIG_DIR is not the handoff root any more"
 # root= in the config file sets the root; HANDOFF_ROOT still wins.
 mkdir -p "$TMP/cfgh/claude-handoff"
 printf '# comment\nroot = ~/from-config  \n' >"$TMP/cfgh/claude-handoff/config"
 OUT=$(env -u HANDOFF_ROOT XDG_CONFIG_HOME="$TMP/cfgh" HOME="$TMP/h" "$SCRIPT" "$TMP/k/a~b" new t)
-has "$TMP/h/from-config/a-b/t/" "root= in the config file sets the root, ~ expanded"
+has "$TMP/h/from-config/a-b/t.md" "root= in the config file sets the root, ~ expanded"
 OUT=$(XDG_CONFIG_HOME="$TMP/cfgh" "$SCRIPT" "$TMP/k/a~b" new t)
-has "$HANDOFF_ROOT/a-b/t/" "HANDOFF_ROOT wins over the config file"
+has "$HANDOFF_ROOT/a-b/t.md" "HANDOFF_ROOT wins over the config file"
 OUT=$(env -u HANDOFF_ROOT XDG_CONFIG_HOME="$TMP/cfgh" HOME="$TMP/h" python3 -c \
   'import sys; ns = {"__name__": "x"}; exec(open(sys.argv[1]).read(), ns); print(ns["handoff_root"]())' "$(dirname "$SCRIPT")/../../bin/handoffs" 2>&1)
 has "$TMP/h/from-config" "the dashboard reads root= from the config file"
@@ -374,7 +405,7 @@ save "$TMP/q3/solo" s1 "S1" >/dev/null
 mkdir -p "$HANDOFF_ROOT/_tips/q3~solo" && : >"$HANDOFF_ROOT/_tips/q3~solo/x.md"
 run "$TMP/q3/solo" describe --no-parent
 has "renamed to @solo"
-assert "--no-parent moves the tasks" [ -d "$HANDOFF_ROOT/solo/s1" ]
+assert "--no-parent moves the tasks" [ -f "$HANDOFF_ROOT/solo/s1.md" ]
 assert "--no-parent moves the tips" [ -f "$HANDOFF_ROOT/_tips/solo/x.md" ]
 run "$TMP/q3/solo" tasks
 has "project: @solo"
@@ -386,7 +417,7 @@ has "NO PARENT"
 TP="$TMP/tipsproj"; mkdir -p "$TP"; cd "$TP" || exit 1
 git init -q && echo one >a.txt && git add a.txt && git commit -qm one
 C1=$(git rev-parse --short HEAD)
-KEYDIR=$(basename "$("$SCRIPT" "$TP" new probe | sed -n 's/^file: //p' | xargs dirname | xargs dirname)")
+KEYDIR=$(basename "$("$SCRIPT" "$TP" new probe | sed -n 's/^file: //p' | xargs dirname)")
 TROOT="$HANDOFF_ROOT/_tips"
 # tip DIR ID TITLE KEYWORDS [EXTRA_FRONTMATTER]: writes a tip file.
 tip() {
@@ -715,7 +746,7 @@ EOF
   jcheck 't["alpha"]["goal"] == "Line one of the goal continues here."' "goal is the first paragraph"
   jcheck 't["alpha"]["next"] == ["First step wraps here.", "Second", "Third"] and t["alpha"]["next_more"] == 2' "next steps: 3 items plus the rest"
   jcheck 't["alpha"]["project"] == "'"$P"'" and t["alpha"]["project_exists"]' "project path from frontmatter"
-  jcheck 't["alpha"]["repo"] == "" and t["alpha"]["branch"] == "" and t["alpha"]["slug"] == "home~app"' "missing repo/branch are empty"
+  jcheck '"repo" not in t["alpha"] and t["alpha"]["branch"] == "" and t["alpha"]["slug"] == "home~app"' "no repo field; a missing branch is empty"
   jcheck 't["old"]["status"] == "archived" and t["old"]["project"] == "'"$P"'" and t["old"]["project_exists"]' "a key's tasks share the path that exists here"
   jcheck 't["bare"]["project"] == "other" and not t["bare"]["project_exists"]' "a key without a path is its own name"
   jcheck 'd["projects"]["'"$P"'"] == {"name": "", "desc": ""} and d["projects"]["other"]["name"] == "other"' "old path keys have no display name"
@@ -747,11 +778,11 @@ EOF
   git -C "$G" commit -q --allow-empty -m two
   git -C "$G/nested" init -q && git -C "$G/nested" commit -q --allow-empty -m n
   mkdir -p "$D/gitproj/repo" "$D/gitproj/nest"
-  printf -- '---\nproject: %s\nrepo: %s\nbranch: main\ncommit: %s\ntitle: r\n---\n' "$G" "$G" "$GC" \
+  printf -- '---\nproject: %s\ndir: .\nbranch: main\ncommit: %s\ntitle: r\n---\n' "$G" "$GC" \
     >"$D/gitproj/repo/2026-09-04_090000.md"
-  printf -- '---\nproject: %s\nrepo: %s/nested\nbranch: main\ncommit: %s\ntitle: n\nfrom: @Bad\n---\n' "$G" "$G" "$GC" \
+  printf -- '---\nproject: %s\ndir: nested\nbranch: main\ncommit: %s\ntitle: n\nfrom: @Bad\n---\n' "$G" "$GC" \
     >"$D/gitproj/nest/2026-09-04_090000.md"
-  # A worktree: repo is the main checkout, project and dir are the worktree.
+  # A worktree: project and dir are the worktree.
   W="$TMP/gitwt"
   git -C "$G" worktree add -q -b wt "$W" 2>/dev/null
   W=$(cd "$W" && pwd -P)
@@ -793,11 +824,11 @@ s, b = get("/api/handoff?slug=..&status=active&task=root", h); print("traversal"
 s, b = get("/api/handoff?slug=home~app&status=active&task=empty", h); print("nomd", s)
 import json, re
 A = "slug=home~app&status=active&task=alpha"
-s, b = get("/api/history?" + A, h); v = json.loads(b); print("history", s, [x["file"] for x in v] == ["2026-09-26_173557.md", "2026-09-25_101500.md"])
+s, b = get("/api/history?" + A, h); v = json.loads(b); print("history", s, [x["file"] for x in v] == ["alpha.md", "2026-09-25_101500.md"])
 s, b = get("/api/handoff?" + A + "&file=2026-09-25_101500.md", h); print("version", s)
 s, b = get("/api/handoff?" + A + "&file=../../x.md", h); print("badfile", s)
-s, b = get("/api/diff?" + A + "&old=2026-09-25_101500.md&new=2026-09-26_173557.md", h); print("diff", s, "+## Next steps" in json.loads(b)["diff"])
-s, b = get("/api/diff?" + A + "&old=nope.md&new=2026-09-26_173557.md", h); print("baddiff", s)
+s, b = get("/api/diff?" + A + "&old=2026-09-25_101500.md&new=alpha.md", h); print("diff", s, "+## Next steps" in json.loads(b)["diff"])
+s, b = get("/api/diff?" + A + "&old=nope.md&new=alpha.md", h); print("baddiff", s)
 s, b = get("/api/search?q=SECOND+paragraph", h); print("search", s, [x["task"] for x in json.loads(b)])
 s, b = get("/api/search?q=x", h); print("shortsearch", s, json.loads(b))
 s, b = get("/api/stale?" + A, h); print("nostale", s)
@@ -813,7 +844,7 @@ print("badorigin", post("/api/done", body, {"X-Handoffs-Token": token, "Origin":
 print("done", post("/api/done", body, {"X-Handoffs-Token": token, "Origin": "http://" + h}))
 print("done-again", post("/api/done", body, {"X-Handoffs-Token": token}))
 print("restore", post("/api/restore", body, {"X-Handoffs-Token": token}))
-open(sys.argv[2] + "/home~app/alpha/.DS_Store", "w").close()
+open(sys.argv[2] + "/home~app/.DS_Store", "w").close()
 print("done-extra", post("/api/done", body, {"X-Handoffs-Token": token}))
 print("restore-extra", post("/api/restore", body, {"X-Handoffs-Token": token}))
 print("traversal-post", post("/api/done", {"slug": "..", "task": "home~app"}, {"X-Handoffs-Token": token}))
@@ -821,11 +852,13 @@ tk = {"X-Handoffs-Token": token}
 ren = lambda task, new, status="active": post("/api/rename", {"slug": "home~app", "status": status, "task": task, "new": new}, tk)
 print("rename-notoken", post("/api/rename", {"slug": "home~app", "status": "active", "task": "alpha", "new": "beta"}, {}))
 print("rename-bad", ren("alpha", "Bad Name"), ren("alpha", "_archive"), ren("alpha", "../x"))
-print("rename-taken", ren("alpha", "old"), ren("alpha", "empty"))
+os.makedirs(sys.argv[2] + "/home~app/_history/hist", exist_ok=True)
+print("rename-taken", ren("alpha", "old"), ren("alpha", "hist"))
 print("rename-missing", ren("nope", "zeta"))
 print("rename-nofield", post("/api/rename", {"slug": "home~app", "task": "alpha"}, tk))
 print("rename", ren("alpha", "beta"))
-crlf = sys.argv[2] + "/home~app/_archive/old/2026-09-01_070000.md"
+crlf = sys.argv[2] + "/home~app/_history/old/2026-09-01_070000.md"
+os.makedirs(os.path.dirname(crlf), exist_ok=True)
 open(crlf, "wb").write(b"---\r\ntask: old\r\ntitle: \xff raw\r\n---\r\nbody")
 os.utime(crlf, (1000000000, 1000000000))
 print("rename-arch", ren("old", "older", "archived"))
@@ -870,7 +903,7 @@ EOF
   has "traversal-post 409" "POST names outside the listing are rejected"
   has "rename-notoken 403" "rename without the token is rejected"
   has "rename-bad 409 409 409" "rename to an invalid name is rejected"
-  has "rename-taken 409 409" "rename to an existing active or archived task is rejected"
+  has "rename-taken 409 409" "rename to an existing task or history is rejected"
   has "rename-missing 409" "rename of an unknown task fails"
   has "rename-nofield 400" "rename without status/new is a bad request"
   has "rename 200" "rename renames an active task"
@@ -885,13 +918,14 @@ EOF
   assert "delete keeps other tips" [ -f "$D/_tips/home~app/tip.md" ]
   assert "tip deletes are logged" [ "$(grep -c '"via": "dashboard"' "$HANDOFF_STATE/tips.jsonl")" -eq 2 ]
   assert "delete is logged" grep -q '"event": "deleted", "project": "home~gone", "id": "raw"' "$HANDOFF_STATE/tips.jsonl"
-  assert "rename moves the task directory" [ -d "$D/home~app/beta" ]
-  assert "rename leaves no old directory" [ ! -e "$D/home~app/alpha" ]
-  assert "rename keeps the archived task archived" [ -d "$D/home~app/_archive/older" ]
-  assert "rename updates the task field" grep -qx 'task: beta' "$D/home~app/beta/2026-09-26_173557.md"
-  assert "rename updates from: in its forks" grep -qx 'from: beta' "$D/home~app/_archive/older/2026-09-01_080000.md"
-  assert "done/restore round trip keeps both versions" [ "$(find "$D/home~app/beta" -name '*.md' | wc -l | tr -d ' ')" -eq 2 ]
-  assert "restore removes the archive entry" [ ! -d "$D/home~app/_archive/alpha" ]
+  assert "rename moves the task file and its history" [ -f "$D/home~app/beta.md" ] && [ -d "$D/home~app/_history/beta" ]
+  assert "rename leaves no old file" [ ! -e "$D/home~app/alpha.md" ] && [ ! -e "$D/home~app/_history/alpha" ]
+  assert "rename keeps the archived task archived" [ -f "$D/home~app/_archive/older.md" ]
+  assert "rename updates the task field" grep -qx 'task: beta' "$D/home~app/beta.md"
+  assert "rename updates from: in its forks" grep -qx 'from: beta' "$D/home~app/_archive/older.md"
+  assert "done/restore round trip keeps both versions" [ "$(find "$D/home~app/_history/beta" -name '*.md' | wc -l | tr -d ' ')" -eq 1 ]
+  assert "restore removes the archive entry" [ ! -e "$D/home~app/_archive/alpha.md" ]
+  assert "the dashboard migrates the old layout" [ ! -d "$D/other/bare" ] && [ -f "$D/other/bare.md" ]
 
   # --read-only: no token, POST refused.
   HANDOFF_ROOT="$D" python3 "$DASH" --no-open --read-only --host 0.0.0.0 --port "$PORT" >"$TMP/dash.log" 2>&1 &

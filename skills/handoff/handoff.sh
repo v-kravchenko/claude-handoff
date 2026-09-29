@@ -3,9 +3,10 @@
 #
 # Handoffs are keyed by the session's project directory (pass
 # ${CLAUDE_PROJECT_DIR}; the shell cwd drifts with `cd`) and a task slug:
-#   $HANDOFF_ROOT/<project>/<task>/YYYY-MM-DD_HHMMSS.md
-#   $HANDOFF_ROOT/<project>/_archive/<task>/...   (finished tasks)
-#   $HANDOFF_ROOT/<project>/_project.md           (description, optional)
+#   $HANDOFF_ROOT/<project>/<task>.md                        latest handoff
+#   $HANDOFF_ROOT/<project>/_archive/<task>.md               (finished tasks)
+#   $HANDOFF_ROOT/<project>/_history/<task>/YYYY-MM-DD_HHMMSS.md  older handoffs
+#   $HANDOFF_ROOT/<project>/_project.md                      (description, optional)
 # <project> is the directory's name (lowercased, a-z0-9._- only), wherever the
 # directory is: ~/x/app and /srv/app are the same project `app`. A project
 # created with `describe --parent` is <parent>~<name> (x~app) and wins over
@@ -22,6 +23,7 @@ config_root() {
   local v
   v=$(sed -n 's/^[[:space:]]*root[[:space:]]*=[[:space:]]*//p' "$HANDOFF_CONFIG" 2>/dev/null | tail -n 1)
   v=${v%"${v##*[![:space:]]}"}
+  # shellcheck disable=SC2088  # a literal ~ in the file
   [[ $v == "~" || $v == "~/"* ]] && v=$HOME${v#\~}
   printf '%s' "$v"
 }
@@ -30,6 +32,7 @@ ROOT=${ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-handoff}
 KEEP="${HANDOFF_KEEP:-10}"
 [[ $KEEP =~ ^[1-9][0-9]*$ ]] || KEEP=10
 ARCHIVE=_archive
+HISTORY=_history
 DESC=_project.md
 PROJECT=${1:-}
 CMD=${2:-}
@@ -111,15 +114,38 @@ abspath() {
   esac
 }
 
-valid_task() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]*$ && $1 != "$ARCHIVE" ]]; }
+valid_task() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]*$ ]]; }
 
-# Handoffs of a task, oldest first (timestamped names sort chronologically).
-handoffs() {
-  local f
-  for f in "$(key)/$1"/*.md; do [[ -f $f ]] && echo "$f"; done
+# A task is one file: <key>/<task>.md (active) or <key>/_archive/<task>.md
+# (done). Its older handoffs are in <key>/_history/<task>/, for both.
+# stamp FILE: YYYY-MM-DD_HHMMSS from its `created`, else from its mtime.
+stamp() {
+  local c; c=$(field created "$1")
+  if [[ $c =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})\ ([0-9]{2}):([0-9]{2}):([0-9]{2}) ]]; then
+    echo "${BASH_REMATCH[1]}_${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}"
+  else
+    date -r "$1" +%Y-%m-%d_%H%M%S 2>/dev/null || echo 0000-00-00_000000
+  fi
 }
 
-latest() { handoffs "$1" | tail -n 1; }
+# to_history FILE TASK: moves a handoff into the task's history, named by its stamp.
+to_history() {
+  local d="$KEY/$HISTORY/$2" s n=0 f
+  s=$(stamp "$1")
+  mkdir -p "$d" || return
+  f="$d/$s.md"
+  while [[ -e $f ]]; do n=$((n + 1)); f="$d/${s}_$n.md"; done
+  mv -- "$1" "$f" && echo "$f"
+}
+
+# Older handoffs of a task, oldest first (C order: <stamp>.md before <stamp>_1.md).
+handoffs() {
+  local f
+  for f in "$(key)/$HISTORY/$1"/*.md; do [[ -f $f ]] && echo "$f"; done | LC_ALL=C sort
+}
+
+# latest TASK | latest _archive/TASK: the task's file, or nothing.
+latest() { [[ -f $(key)/$1.md ]] && echo "$KEY/$1.md"; }
 
 # "YYYY-MM-DD HH:MM:SS +ZZZZ" -> epoch seconds (GNU date, then BSD date).
 epoch() {
@@ -128,11 +154,11 @@ epoch() {
 
 # Task names, most recently saved first; `task_names _archive` lists archived ones.
 task_names() {
-  local d f pre=${1:+$1/}
-  for d in "$(key)/$pre"*/; do
-    [[ -d $d ]] || continue
-    d=$(basename "$d"); valid_task "$d" || continue
-    f=$(latest "$pre$d"); [[ -n $f ]] && echo "$(basename "$f") $d"
+  local f t pre=${1:+$1/}
+  for f in "$(key)/$pre"*.md; do
+    [[ -f $f ]] || continue
+    t=$(basename "$f" .md); valid_task "$t" || continue
+    echo "$(stamp "$f") $t"
   done | sort -r | cut -d' ' -f2
 }
 
@@ -145,7 +171,7 @@ state_line() {
 task_status() {
   local f
   if [[ -n $(latest "$1") ]]; then echo active
-  elif f=$(latest "$ARCHIVE/$1"); [[ -n $f ]]; then f=$(basename "$f"); echo "done ${f%_*}"
+  elif f=$(latest "$ARCHIVE/$1"); [[ -n $f ]]; then f=$(stamp "$f"); echo "done ${f%_*}"
   else echo missing
   fi
 }
@@ -167,9 +193,9 @@ forks() {
 # @query -> task (exact name). Prints the task or a message.
 resolve() {
   local q=${1#@}
-  if valid_task "$q" && [[ -d $(key)/$q ]]; then
+  if valid_task "$q" && [[ -f $(key)/$q.md ]]; then
     echo "$q"
-  elif valid_task "$q" && [[ -d $(key)/$ARCHIVE/$q ]]; then
+  elif valid_task "$q" && [[ -f $(key)/$ARCHIVE/$q.md ]]; then
     echo "ARCHIVED: @$q"; return 1
   else
     echo "NO TASK: @$q"; return 1
@@ -181,11 +207,9 @@ cmd_meta() {
   echo "host: $(hostname 2>/dev/null || uname -n)"
   echo "dir: $(relpath "$WORKDIR")"
   if in_git; then
-    echo "repo: $(relpath "$(repo_root)")"
     echo "branch: $(branch)"
     echo "commit: $(git rev-parse -q --verify HEAD 2>/dev/null || echo none)"
   else
-    echo "repo: none"
     echo "branch: none"
     echo "commit: none"
   fi
@@ -209,56 +233,96 @@ cmd_tasks() {
     while read -r t; do
       [[ -n $t ]] || continue
       f=$(latest "$pre$t"); n=$((n + 1))
-      ts=$(basename "$f" .md)
+      ts=$(stamp "$f")
       printf '@%s | %s | %s %s:%s%s\n' "$t" "$(field title "$f")" "${ts%_*}" "${ts:11:2}" "${ts:13:2}" "${pre:+ | archived}"
     done < <(task_names "${pre%/}")
   done
   ((n)) || echo "(no tasks)"
 }
 
+# new TASK: the task's file is free to write; the previous handoff, if any,
+# moves to the history and is printed as `latest`. With no file (a /handoff
+# stopped before writing it), `latest` is the newest in the history.
 cmd_new() {
-  local t=${1#@} f
+  local t=${1#@} f prev=""
   valid_task "$t" || { echo "INVALID TASK: '$t' (use lowercase a-z0-9._-)"; return; }
-  local prev; prev=$(latest "$t")
-  mkdir -p "$(key)/$t"
-  # Names have one-second resolution; never hand out an existing file.
-  while f="$(key)/$t/$(date +%Y-%m-%d_%H%M%S).md"; [[ -e $f ]]; do sleep 1; done
+  mkdir -p "$(key)" || return
+  f="$KEY/$t.md"
+  if [[ -f $f ]]; then prev=$(to_history "$f" "$t")
+  elif [[ ! -f $KEY/$ARCHIVE/$t.md ]]; then prev=$(handoffs "$t" | tail -n 1)
+  fi
   echo "file: $f"
   echo "task: $t"
   echo "latest: $prev"
-  if [[ -z $prev && -d $(key)/$ARCHIVE/$t ]]; then
+  if [[ -z $prev && -f $KEY/$ARCHIVE/$t.md ]]; then
     echo "note: @$t was archived; to continue it instead, restore it: /pickup @$t offers Restore"
   fi
 }
 
+# cancel TASK: undoes `new` when no file was written: the newest handoff in
+# the history becomes the task's file again.
+cmd_cancel() {
+  local t=${1#@} f
+  valid_task "$t" || { echo "INVALID TASK: '$t'"; return; }
+  if [[ -f $(key)/$t.md ]]; then echo "kept: @$t"; return; fi
+  f=$(handoffs "$t" | tail -n 1)
+  [[ -n $f ]] || { echo "NO TASK: @$t"; return; }
+  mv -- "$f" "$KEY/$t.md" && rmdir -- "$KEY/$HISTORY/$t" "$KEY/$HISTORY" 2>/dev/null
+  echo "kept: @$t"
+}
+
+# prune TASK: keeps the newest KEEP-1 older handoffs (the task's file is the KEEP-th).
 cmd_prune() {
   local t=${1#@}
   valid_task "$t" || return
-  handoffs "$t" | sort -r | tail -n +"$((KEEP + 1))" | while read -r f; do rm -f -- "$f"; done
+  handoffs "$t" | sort -r | tail -n +"$KEEP" | while read -r f; do rm -f -- "$f"; done
+  rmdir -- "$KEY/$HISTORY/$t" "$KEY/$HISTORY" 2>/dev/null
+}
+
+# move_task SRC DST TASK: moves a task file; one already at DST goes to the history.
+move_task() {
+  [[ -f $2 ]] && { to_history "$2" "$3" >/dev/null || return; }
+  mkdir -p "$(dirname "$2")" && mv -- "$1" "$2"
+}
+
+# The layout of 1.5.0 and older, <key>/<task>/<stamp>.md and
+# <key>/_archive/<task>/<stamp>.md: the newest file becomes the task's file,
+# the others its history.
+migrate() {
+  local d t pre f last
+  for pre in "" "$ARCHIVE/"; do
+    for d in "$KEY/$pre"*/; do
+      [[ -d $d ]] || continue
+      t=$(basename "$d"); valid_task "$t" || continue
+      last=""
+      for f in "$d"*.md; do [[ -f $f ]] && last=$f; done
+      [[ -n $last ]] || continue
+      # A handoff without `created` keeps its file name's time (YYYY-MM-DD_HHMMSS).
+      for f in "$d"*.md; do
+        [[ $(basename "$f") =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})_([0-9]{4})([0-9]{2}) ]] &&
+          touch -t "${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}.${BASH_REMATCH[5]}" "$f" 2>/dev/null
+      done
+      for f in "$d"*.md; do [[ $f == "$last" ]] || to_history "$f" "$t" >/dev/null; done
+      move_task "$last" "$KEY/$pre$t.md" "$t"
+      rmdir -- "$d" 2>/dev/null
+    done
+  done
 }
 
 cmd_done() {
-  local t=${1#@} dst
-  if ! valid_task "$t" || [[ ! -d $(key)/$t ]]; then echo "NO TASK: @$t"; return; fi
-  if [[ -z $(latest "$t") ]]; then
-    rmdir -- "$(key)/$t" 2>/dev/null
-    echo "NO TASK: @$t (no handoffs saved)"; return
-  fi
-  dst="$(key)/$ARCHIVE/$t"
-  mkdir -p "$dst" && mv -- "$(key)/$t"/*.md "$dst"/ 2>/dev/null
-  rmdir -- "$(key)/$t" 2>/dev/null
-  echo "archived: @$t -> $dst"
+  local t=${1#@}
+  if ! valid_task "$t" || [[ ! -f $(key)/$t.md ]]; then echo "NO TASK: @$t"; return; fi
+  move_task "$KEY/$t.md" "$KEY/$ARCHIVE/$t.md" "$t" && echo "archived: @$t -> $KEY/$ARCHIVE/$t.md"
 }
 
-# Runs in a subshell: it cd's into the repo/dir recorded in the handoff.
+# Runs in a subshell: it cd's into the dir recorded in the handoff.
 cmd_stale() (
   local f commit created dir
   [[ -f ${1:-} ]] || { echo "NO FILE: ${1:-}"; exit; }
   f="$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"
   commit=$(field commit "$f")
   created=$(field created "$f")
-  dir=$(field repo "$f")
-  [[ -z $dir || $dir == none ]] && dir=$(field dir "$f")
+  dir=$(field dir "$f")
   [[ -n $dir ]] && dir=$(abspath "$dir" "$(field project "$f")")
   echo "## staleness"
   echo "created: ${created:-unknown}"
@@ -274,6 +338,7 @@ cmd_stale() (
     echo "work dir: $dir"
   fi
   if in_git; then
+    cd "$(git rev-parse --show-toplevel)" 2>/dev/null || :  # dirty paths relative to the repo
     if [[ -n $commit && $commit != none ]]; then
       if git cat-file -e "$commit^{commit}" 2>/dev/null; then
         local n; n=$(git rev-list --count "$commit..HEAD" 2>/dev/null)
@@ -293,12 +358,11 @@ cmd_stale() (
   fi
 )
 
-# restore TASK: moves an archived task back (merges into an active one).
+# restore TASK: moves an archived task back (an active one goes to the history first).
 cmd_restore() {
-  local t=${1#@} k; k=$(key)
-  if ! valid_task "$t" || [[ ! -d $k/$ARCHIVE/$t ]]; then echo "NO TASK: @$t (not archived)"; return; fi
-  mkdir -p "$k/$t" && mv "$k/$ARCHIVE/$t"/*.md "$k/$t"/ && rmdir "$k/$ARCHIVE/$t" &&
-    echo "restored: @$t"
+  local t=${1#@}
+  if ! valid_task "$t" || [[ ! -f $(key)/$ARCHIVE/$t.md ]]; then echo "NO TASK: @$t (not archived)"; return; fi
+  move_task "$KEY/$ARCHIVE/$t.md" "$KEY/$t.md" "$t" && echo "restored: @$t"
 }
 
 # show [@task|task|FILE]; with no argument, the only task or a task list.
@@ -315,7 +379,6 @@ cmd_show() {
       echo; echo "## tasks"; cmd_tasks; return
     fi
     f=$(latest "$t")
-    [[ -n $f ]] || { echo "NO TASK: @$t (no handoffs saved)"; return; }
   else
     local names; names=$(task_names)
     if [[ -z $names ]]; then
@@ -329,7 +392,9 @@ cmd_show() {
     fi
     f=$(latest "$names")
   fi
-  t=$(basename "$(dirname "$f")")
+  # <key>/t.md, <key>/_archive/t.md or <key>/_history/t/<stamp>.md
+  t=$(basename "$f" .md)
+  [[ $(basename "$(dirname "$(dirname "$f")")") == "$HISTORY" ]] && t=$(basename "$(dirname "$f")")
   echo "file: $f"
   echo "task: $t"
   project_line
@@ -392,7 +457,7 @@ cmd_describe() {
 # shellcheck source=SCRIPTDIR/tips.sh
 . "$(dirname "${BASH_SOURCE[0]}")/tips.sh"
 
-USAGE="usage: handoff.sh PROJECT_DIR meta|git|tasks|describe [--parent|--no-parent] [TEXT]|new TASK|prune TASK|done TASK|restore TASK|stale FILE|show [@TASK|FILE]|tips ..."
+USAGE="usage: handoff.sh PROJECT_DIR meta|git|tasks|describe [--parent|--no-parent] [TEXT]|new TASK|cancel TASK|prune TASK|done TASK|restore TASK|stale FILE|show [@TASK|FILE]|tips ..."
 
 if [[ -z $PROJECT || ! -d $PROJECT ]]; then
   echo "$USAGE"
@@ -403,7 +468,7 @@ fi
 # there are tips to search (tips_init).
 case "$CMD ${3:-}" in
   meta\ *|git\ *|"tips hook"|"tips prompt-hook") ;;
-  *) key >/dev/null ;;
+  *) key >/dev/null; migrate ;;
 esac
 
 case "$CMD" in
@@ -412,6 +477,7 @@ case "$CMD" in
   tasks) project_line; cmd_tasks all ;;
   describe) shift 2; cmd_describe "$@" ;;
   new) cmd_new "${3:-}" ;;
+  cancel) cmd_cancel "${3:-}" ;;
   prune) cmd_prune "${3:-}" ;;
   done) cmd_done "${3:-}" ;;
   restore) cmd_restore "${3:-}" ;;

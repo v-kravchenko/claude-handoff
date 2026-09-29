@@ -139,7 +139,7 @@ A typical loop:
 
 ```text
 > /handoff @auth-rewrite
-@auth-rewrite  ~/.local/share/claude-handoff/app/auth-rewrite/2026-09-26_173557.md
+@auth-rewrite  ~/.local/share/claude-handoff/app/auth-rewrite.md
 Session middleware migrated; token refresh still failing in tests/auth.spec.ts.
 
 > /clear
@@ -307,11 +307,12 @@ Handoffs are plain Markdown files stored outside your repositories:
 $HANDOFF_ROOT/                      # ~/.local/share/claude-handoff by default
 └── <project>/                      # app for ~/code/app and /srv/app; x~app with describe --parent
     ├── _project.md                 # description (optional, handoff.sh describe)
-    ├── <task>/
-    │   ├── 2026-09-25_101500.md
-    │   └── 2026-09-26_173557.md    # latest one wins
-    └── _archive/
-        └── <task>/...              # tasks finished with `/handoff @task done`
+    ├── <task>.md                   # the task's latest handoff
+    ├── _archive/
+    │   └── <task>.md               # tasks finished with `/handoff @task done`
+    └── _history/
+        └── <task>/
+            └── 2026-09-25_101500.md  # older handoffs, named by their `created`
 $HANDOFF_ROOT/_tips/
 ├── _global/<id>.md                 # global tips
 └── <project>/<id>.md               # project tips
@@ -323,6 +324,13 @@ $HANDOFF_STATE/                     # ~/.local/state/claude-handoff by default; 
 
 The root holds only `.md` files, so several machines can share it; each
 machine keeps its logs in its own `HANDOFF_STATE`.
+
+A task is one note, `<task>.md`, whose dates are in its frontmatter
+(`created`). `/handoff` moves the previous one to `_history/<task>/` before
+writing the new one; `done` and `restore` move only `<task>.md`, and a
+rename on the dashboard renames the file and its history. Handoffs saved
+before 1.6.0 (`<task>/<stamp>.md`) are converted the first time a script or
+the dashboard opens the project.
 
 - The **project** is the name of Claude Code's project directory
   (`$CLAUDE_PROJECT_DIR`, the directory the session was opened in),
@@ -342,12 +350,15 @@ machine keeps its logs in its own `HANDOFF_STATE`.
   a new one: `~/work/api` becomes `work~api`, and `api` stays as it was for
   the other `api` directories. `describe --no-parent` renames it back to
   `<name>` if that name is free.
-- Each file starts with YAML frontmatter (`project`, `host`, `dir`, `repo`, `branch`,
+- Each file starts with YAML frontmatter (`project`, `host`, `dir`, `branch`,
   `commit`, `created`, `task`, `from` for a fork, `session`, `title`), followed by
   the sections *Goal, State, Decisions, Key context, Gotchas, User
-  preferences, Next steps, Verify*. `dir` and `repo` are relative to the
-  project directory (`.` for itself), so `/pickup` finds the work dir after
+  preferences, Next steps, Verify*. `dir` (where the work happened) is relative
+  to the project directory (`.` for itself), so `/pickup` finds it after
   the project moved; handoffs saved before 1.5.0 have absolute paths.
+  `branch` and `commit` are of the repository `dir` is in. There is no
+  `repo` field since 1.6.0: the project directory is the repository (or
+  none); older handoffs keep theirs, and it is ignored.
 - The model writes the summary; `skills/handoff/handoff.sh` handles storage,
   task listing, pruning, archiving and the staleness report. The script
   always exits 0, because a failing `!` command would abort the skill.
@@ -367,7 +378,7 @@ archive.
 | `HANDOFF_ROOT` | `root=` in the config file, else `${XDG_DATA_HOME:-~/.local/share}/claude-handoff` | Where handoffs and tips are stored; any directory works. |
 | `HANDOFF_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/claude-handoff/config` | The config file (`root=`). |
 | `HANDOFF_STATE` | `${XDG_STATE_HOME:-~/.local/state}/claude-handoff` | Per-machine files: the tips log, the dashboard's PID file and log. |
-| `HANDOFF_KEEP` | `10` | Handoffs kept per task (a positive integer; anything else means 10). Older ones are deleted when you save. |
+| `HANDOFF_KEEP` | `10` | Handoffs kept per task, the task's file included (a positive integer; anything else means 10). Older ones are deleted from `_history/` when you save. |
 | `HANDOFF_PORT` | `8765` | Default port of the `handoffs` dashboard. |
 | `TIPS_LOG_MAX` | `262144` | Size in bytes after which the tips log moves to `tips.1.jsonl`. |
 | `HANDOFF_BIN_DIR` | `~/.local/bin` (`$PREFIX/bin` on Termux) | Where `install.sh` puts `handoffs`. |

@@ -36,6 +36,7 @@ import webbrowser
 
 VERSION = "1.5.0"
 ARCHIVE = "_archive"
+HISTORY = "_history"  # older handoffs: <slug>/_history/<task>/<stamp>.md
 TIPS = "_tips"  # tips store (skills/handoff/tips.sh), not a project
 DESC = "_project.md"  # a project's description (handoff.sh describe)
 GOAL_MAX = 200
@@ -159,25 +160,31 @@ def iso_created(created, filename):
 
 
 def own_repo(fields):
-    """Git fields describe the project itself: the project directory is the
-    repository, or a worktree of it (then `repo` is the main checkout).
-    Since 1.5.0 `repo` and `dir` are relative to the project (`.` for it)."""
-    project, repo = fields.get("project", ""), fields.get("repo", "")
-    if not project or repo in ("", "none"):
-        return False
-    return repo in (".", project) or (
-        fields.get("dir") in (".", project) and os.path.exists(os.path.join(project, ".git")))
+    """Git fields describe the project itself: the work happened in the
+    project directory (a repository or a worktree), not in a subdirectory.
+    Since 1.5.0 `dir` is relative to the project (`.` for it)."""
+    project = fields.get("project", "")
+    return bool(project) and fields.get("dir") in (".", project) and \
+        fields.get("commit") not in (None, "", "none")
 
 
-def read_task(task_dir, task, status):
-    files = sorted(f for f in os.listdir(task_dir) if f.endswith(".md"))
-    if not files:
-        return None
-    latest = files[-1]
+def stamp(path, fields=None):
+    """YYYY-MM-DD_HHMMSS of a handoff: from its `created`, else its mtime."""
+    if fields is None:
+        fields, _ = parse_frontmatter(read_lines(os.path.dirname(path), os.path.basename(path)) or [])
+    m = re.match(r"(\d{4}-\d\d-\d\d) (\d\d):(\d\d):(\d\d)", fields.get("created") or "")
+    if m:
+        return "%s_%s%s%s" % m.groups()
     try:
-        with open(os.path.join(task_dir, latest), encoding="utf-8", errors="replace") as fh:
-            lines = fh.read().splitlines()
+        return datetime.datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d_%H%M%S")
     except OSError:
+        return "0000-00-00_000000"
+
+
+def read_task(base, task, status, slug_dir):
+    path = os.path.join(base, task + ".md")
+    lines = read_lines(base, task + ".md")
+    if lines is None:
         return None
     fields, start = parse_frontmatter(lines)
     body = lines[start:]
@@ -185,20 +192,20 @@ def read_task(task_dir, task, status):
     project = fields.get("project", "")
     none = lambda v: "" if v in (None, "none") else v  # noqa: E731
     parent = fields.get("from", "")
+    saved = stamp(path, fields)
     return {
         "task": task,
         "status": status,
-        "from": parent if TASK_RE.fullmatch(parent) and parent != ARCHIVE else "",
+        "from": parent if TASK_RE.fullmatch(parent) else "",
         "title": fields.get("title") or task,
         "project": project,
         "project_exists": bool(project) and os.path.isdir(project),
-        "created": iso_created(fields.get("created"), latest),
-        "saved": latest[:-3],
-        "versions": len(files),
+        "created": iso_created(fields.get("created"), saved),
+        "saved": saved,
+        "versions": len(md_files(os.path.join(slug_dir, HISTORY, task))) + 1,
         "goal": first_paragraph(section(body, "goal"), GOAL_MAX),
         "next": steps[:NEXT_MAX],
         "next_more": max(0, len(steps) - NEXT_MAX),
-        "repo": none(fields.get("repo")),
         "branch": none(fields.get("branch")),
         "commit": none(fields.get("commit"))[:7],
         "dir": none(fields.get("dir")),
@@ -206,23 +213,35 @@ def read_task(task_dir, task, status):
     }
 
 
-def task_dir(root, slug, status, task):
-    """Directory of a listed task, or None. Names are matched against directory
-    listings, never joined from user input directly."""
+def md_files(d):
+    try:
+        return sorted(f for f in os.listdir(d) if f.endswith(".md") and os.path.isfile(os.path.join(d, f)))
+    except OSError:
+        return []
+
+
+def task_names(d):
+    """Tasks stored in d (a project or its _archive): <task>.md files."""
+    return [f[:-3] for f in md_files(d) if TASK_RE.fullmatch(f[:-3])]
+
+
+def task_base(root, slug, status, task):
+    """Directory holding a listed task's file, or None. Names are matched
+    against directory listings, never joined from user input directly."""
     if slug not in projects(root):
         return None
     base = os.path.join(root, slug, ARCHIVE) if status == "archived" else os.path.join(root, slug)
-    names = subdirs(base)
-    if task not in names or (status != "archived" and task == ARCHIVE):
-        return None
-    return os.path.join(base, task)
+    return base if task in task_names(base) else None
 
 
-def versions(d):
-    try:
-        return sorted(f for f in os.listdir(d) if f.endswith(".md")) if d else []
-    except OSError:
+def versions(root, slug, status, task):
+    """(name, directory) of every handoff of a task, oldest first: the history,
+    then the task's file. Returns [] for an unknown task."""
+    base = task_base(root, slug, status, task)
+    if not base:
         return []
+    hist = os.path.join(root, slug, HISTORY, task)
+    return [(f, hist) for f in md_files(hist)] + [(task + ".md", base)]
 
 
 def read_lines(d, name):
@@ -234,44 +253,44 @@ def read_lines(d, name):
 
 
 def pick(files, name):
-    """`name` if it is one of `files`, the latest file if `name` is empty, else None."""
+    """(name, dir) for `name` if it is one of `files`, the latest if `name` is
+    empty, else None."""
     if not files:
         return None
     if not name:
         return files[-1]
-    return name if name in files else None
+    return next((f for f in files if f[0] == name), None)
 
 
 def read_body(root, slug, status, task, name=""):
     """Markdown body (without frontmatter) of one handoff of a task (default: the latest)."""
-    d = task_dir(root, slug, status, task)
-    name = pick(versions(d), name)
-    lines = read_lines(d, name) if name else None
+    f = pick(versions(root, slug, status, task), name)
+    lines = read_lines(f[1], f[0]) if f else None
     if lines is None:
         return None
     _, start = parse_frontmatter(lines)
-    return {"file": name, "body": "\n".join(lines[start:]).strip("\n")}
+    return {"file": f[0], "body": "\n".join(lines[start:]).strip("\n")}
 
 
 def history(root, slug, status, task):
-    d = task_dir(root, slug, status, task)
+    files = versions(root, slug, status, task)
     out = []
-    for name in reversed(versions(d)):
+    for name, d in reversed(files):
         fields, _ = parse_frontmatter(read_lines(d, name) or [])
         out.append({"file": name, "title": fields.get("title") or task,
-                    "created": iso_created(fields.get("created"), name)})
-    return out if d else None
+                    "created": iso_created(fields.get("created"), stamp(os.path.join(d, name), fields))})
+    return out if files else None
 
 
 def diff(root, slug, status, task, old, new):
-    d = task_dir(root, slug, status, task)
-    files = versions(d)
-    if not old or not new or pick(files, old) is None or pick(files, new) is None:
+    files = versions(root, slug, status, task)
+    a, b = pick(files, old) if old else None, pick(files, new) if new else None
+    if not a or not b:
         return None
-    def body(name):
-        lines = read_lines(d, name) or []
+    def body(f):
+        lines = read_lines(f[1], f[0]) or []
         return lines[parse_frontmatter(lines)[1]:]
-    lines = difflib.unified_diff(body(old), body(new), old, new, lineterm="", n=2)
+    lines = difflib.unified_diff(body(a), body(b), old, new, lineterm="", n=2)
     return {"old": old, "new": new, "diff": "\n".join(lines)}
 
 
@@ -283,72 +302,108 @@ def search(root, query):
         return hits
     for slug in projects(root):
         base = os.path.join(root, slug)
-        dirs = [(n, "active", os.path.join(base, n)) for n in subdirs(base) if n != ARCHIVE]
-        dirs += [(n, "archived", os.path.join(base, ARCHIVE, n)) for n in subdirs(os.path.join(base, ARCHIVE))]
-        for task, status, d in dirs:
-            name = pick(versions(d), "")
-            text = "\n".join(read_lines(d, name) or []) if name else ""
-            i = text.lower().find(q)
-            if i >= 0:
-                s = max(0, i - 60)
-                snippet = " ".join(text[s:i + len(q) + 60].split())
-                hits.append({"slug": slug, "status": status, "task": task,
-                             "snippet": ("…" if s else "") + snippet + "…"})
+        for status, d in (("active", base), ("archived", os.path.join(base, ARCHIVE))):
+            for task in task_names(d):
+                text = "\n".join(read_lines(d, task + ".md") or [])
+                i = text.lower().find(q)
+                if i >= 0:
+                    s = max(0, i - 60)
+                    snippet = " ".join(text[s:i + len(q) + 60].split())
+                    hits.append({"slug": slug, "status": status, "task": task,
+                                 "snippet": ("…" if s else "") + snippet + "…"})
     return hits
 
 
+def to_history(root, slug, task, path):
+    """Move a handoff into the task's history, named by its stamp."""
+    d = os.path.join(root, slug, HISTORY, task)
+    os.makedirs(d, exist_ok=True)
+    s = stamp(path)
+    dst, n = os.path.join(d, s + ".md"), 0
+    while os.path.exists(dst):
+        n += 1
+        dst = os.path.join(d, "%s_%d.md" % (s, n))
+    os.replace(path, dst)
+
+
 def move_task(root, slug, task, archive):
-    """Archive (`done`) or restore a task, merging into an existing directory,
-    like `handoff.sh done|restore`. Returns an error message or None."""
-    src = task_dir(root, slug, "active" if archive else "archived", task)
+    """Archive (`done`) or restore a task, like `handoff.sh done|restore`: a
+    task file already there goes to the history. Returns an error message or None."""
+    src = task_base(root, slug, "active" if archive else "archived", task)
     if not src:
         return "no such task"
-    files = versions(src)
-    if not files:
-        return "no handoffs saved"
     base = os.path.join(root, slug)
-    dst = os.path.join(base, ARCHIVE, task) if archive else os.path.join(base, task)
+    dst = os.path.join(base, ARCHIVE) if archive else base
     try:
-        if not os.path.exists(dst):
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            os.replace(src, dst)
-            return None
-        for f in files:  # a task with this name exists there: merge the handoffs
-            os.replace(os.path.join(src, f), os.path.join(dst, f))
+        if os.path.exists(os.path.join(dst, task + ".md")):
+            to_history(root, slug, task, os.path.join(dst, task + ".md"))
+        os.makedirs(dst, exist_ok=True)
+        os.replace(os.path.join(src, task + ".md"), os.path.join(dst, task + ".md"))
     except OSError as e:
         return str(e)
-    shutil.rmtree(src, ignore_errors=True)  # leftovers such as .DS_Store
     return None
+
+
+def migrate(root):
+    """The layout of 1.5.0 and older, <slug>/<task>/<stamp>.md and
+    <slug>/_archive/<task>/<stamp>.md: the newest file becomes the task's
+    file, the others its history (like handoff.sh)."""
+    for slug in projects(root):
+        base = os.path.join(root, slug)
+        for d in (base, os.path.join(base, ARCHIVE)):
+            for task in subdirs(d):
+                files = md_files(os.path.join(d, task))
+                if not TASK_RE.fullmatch(task) or not files:
+                    continue
+                try:
+                    for f in files:  # a handoff without `created` keeps its file name's time
+                        try:
+                            t = time.mktime(time.strptime(f[:17], "%Y-%m-%d_%H%M%S"))
+                            os.utime(os.path.join(d, task, f), (t, t))
+                        except ValueError:
+                            pass
+                    for f in files[:-1]:
+                        to_history(root, slug, task, os.path.join(d, task, f))
+                    if os.path.exists(os.path.join(d, task + ".md")):
+                        to_history(root, slug, task, os.path.join(d, task + ".md"))
+                    os.replace(os.path.join(d, task, files[-1]), os.path.join(d, task + ".md"))
+                    os.rmdir(os.path.join(d, task))
+                except OSError:
+                    pass
 
 
 TASK_RE = re.compile(r"[a-z0-9][a-z0-9._-]*")
 
 
 def rename_task(root, slug, status, task, new):
-    """Rename a task (active or archived) in place and update the `task:` field
-    of its handoffs and the `from:` field of its forks. Refuses names taken by
-    an active or archived task. Returns an error message or None."""
-    src = task_dir(root, slug, status, task)
+    """Rename a task (active or archived) in place, with its history, and
+    update the `task:` field of its handoffs and the `from:` field of its
+    forks. Refuses names taken by an active or archived task or a history.
+    Returns an error message or None."""
+    src = task_base(root, slug, status, task)
     if not src:
         return "no such task"
-    if not TASK_RE.fullmatch(new) or new == ARCHIVE:
+    if not TASK_RE.fullmatch(new):
         return "invalid name (use lowercase a-z0-9._-)"
     if new == task:
         return None
     base = os.path.join(root, slug)
-    if any(os.path.exists(os.path.join(d, new)) for d in (base, os.path.join(base, ARCHIVE))):
+    hist = os.path.join(base, HISTORY)
+    if any(os.path.exists(os.path.join(d, new + ".md")) for d in (base, os.path.join(base, ARCHIVE))) \
+            or os.path.exists(os.path.join(hist, new)):
         return "@%s already exists" % new
-    dst = os.path.join(os.path.dirname(src), new)
     try:
-        os.rename(src, dst)
+        os.rename(os.path.join(src, task + ".md"), os.path.join(src, new + ".md"))
+        if os.path.isdir(os.path.join(hist, task)):
+            os.rename(os.path.join(hist, task), os.path.join(hist, new))
     except OSError as e:
         return str(e)
-    for name in versions(dst):
-        set_field(os.path.join(dst, name), "task", new)
+    set_field(os.path.join(src, new + ".md"), "task", new)
+    for name in md_files(os.path.join(hist, new)):
+        set_field(os.path.join(hist, new, name), "task", new)
     for d in (base, os.path.join(base, ARCHIVE)):
-        for child in subdirs(d):
-            for name in versions(os.path.join(d, child)) if child != ARCHIVE else []:
-                set_field(os.path.join(d, child, name), "from", new, old=task)
+        for child in task_names(d):
+            set_field(os.path.join(d, child + ".md"), "from", new, old=task)
     return None
 
 
@@ -396,15 +451,13 @@ def projects(root):
 
 
 def collect(root):
+    migrate(root)
     tasks = []
     for slug in projects(root):
         base = os.path.join(root, slug)
-        for name in subdirs(base):
-            if name == ARCHIVE:
-                for arch in subdirs(os.path.join(base, ARCHIVE)):
-                    tasks.append((slug, read_task(os.path.join(base, ARCHIVE, arch), arch, "archived")))
-            else:
-                tasks.append((slug, read_task(os.path.join(base, name), name, "active")))
+        for status, d in (("active", base), ("archived", os.path.join(base, ARCHIVE))):
+            for task in task_names(d):
+                tasks.append((slug, read_task(d, task, status, base)))
     out = [t for _, t in tasks if t]
     for (slug, t) in tasks:
         if t:

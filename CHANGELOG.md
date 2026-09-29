@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Breaking
+
+- A task is one file, `<project>/<task>.md` (archived:
+  `<project>/_archive/<task>.md`), instead of a directory of
+  `<stamp>.md` files. Older handoffs go to `<project>/_history/<task>/`,
+  named by their `created`; `HANDOFF_KEEP` counts the task's file too.
+  The old layout is converted the first time `handoff.sh` or the dashboard
+  opens a project; a handoff without `created` keeps its file name's time
+  as its mtime.
+- Handoffs have no `repo` field: the project directory is the repository
+  (or there is none). `branch` and `commit` are those of `dir`'s repository;
+  the staleness report checks it from there. The field in older handoffs is
+  ignored.
+- `/handoff` with nothing new runs `handoff.sh cancel TASK`, which puts the
+  handoff `new` moved to the history back.
+
 ### Added
 
 - The config file `${XDG_CONFIG_HOME:-~/.config}/claude-handoff/config`

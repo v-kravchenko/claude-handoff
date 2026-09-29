@@ -66,8 +66,9 @@ Run each `handoff.sh` command in its own Bash call, exactly as written: no
    - otherwise a new short slug derived from the title (not one already taken,
      archived tasks included).
 3. Run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" new <task>`. It
-   prints the target `file`, the `task` for the frontmatter and the task's
-   `latest` handoff. If it prints a `note:` about an archived task, mention it
+   prints the target `file` (`<task>.md`), the `task` for the frontmatter and
+   the task's `latest` handoff, which it has just moved to the task's history.
+   If it prints a `note:` about an archived task, mention it
    (with how to restore it) in your final reply.
 4. If `latest` is not empty and that handoff is not in this conversation (the
    session did not start with `/pickup` of this task, or the context was
@@ -75,8 +76,9 @@ Run each `handoff.sh` command in its own Bash call, exactly as written: no
    and gotchas that git, the code, the changelog and CLAUDE.md don't already
    record; don't re-litigate settled points. Keep its `from:` line, if any.
 5. If nothing happened since `latest` (no changes, decisions or new facts),
-   don't write a new file: do step 9 (tips) only, then reply that `latest` is
-   still current (plus the tips line) and stop.
+   don't write a new file: run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" cancel <task>`
+   (it puts `latest` back as the task's file), do step 9 (tips) only, then
+   reply that `latest` is still current (plus the tips line) and stop.
 6. Write from the current state, not by appending to the old handoff. Review
    the whole conversation and fill the template below. Be specific: exact
    file paths (backticked, `path:line` where useful), commands, error
