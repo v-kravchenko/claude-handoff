@@ -293,7 +293,7 @@ main() {
     for s in "${SKILLS[@]}"; do remove_skill "$s"; done
     remove_tips
     remove_dashboard
-    echo "done: saved handoffs and tips were kept (${HANDOFF_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-handoff})"
+    echo "done: saved handoffs and tips were kept (see root= in ${HANDOFF_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-handoff/config}; default ${XDG_DATA_HOME:-$HOME/.local/share}/claude-handoff)"
     exit 0
   fi
 

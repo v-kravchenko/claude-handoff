@@ -286,8 +286,9 @@ handoffs service status | restart | uninstall
 ```
 
 The service starts at login and restarts on failure; add `--dry-run` to see
-the unit/plist without changing anything. `HANDOFF_ROOT`, `XDG_DATA_HOME`
-and `HANDOFF_PORT` are copied into it. `install.sh` restarts the service after
+the unit/plist without changing anything. `HANDOFF_CONFIG`, `HANDOFF_STATE`,
+`HANDOFF_PORT` and the `XDG_*` directories are copied into it; `HANDOFF_ROOT`
+is not, so the service follows `root=` in the config file. `install.sh` restarts the service after
 an update and removes it on uninstall. On Linux, `loginctl enable-linger`
 keeps it running while you are logged out. Termux has no service manager: use
 `handoffs --background`.
@@ -313,9 +314,15 @@ $HANDOFF_ROOT/                      # ~/.local/share/claude-handoff by default
         └── <task>/...              # tasks finished with `/handoff @task done`
 $HANDOFF_ROOT/_tips/
 ├── _global/<id>.md                 # global tips
-├── <project>/<id>.md               # project tips
-└── log.jsonl                       # tip events for the dashboard stats (no query text); rotated to log.1.jsonl
+└── <project>/<id>.md               # project tips
+$HANDOFF_STATE/                     # ~/.local/state/claude-handoff by default; per machine
+├── tips.jsonl                      # tip events for the dashboard stats (no query text); rotated to tips.1.jsonl
+├── handoffs.pid                    # the `handoffs --background` dashboard
+└── handoffs.log
 ```
+
+The root holds only `.md` files, so several machines can share it; each
+machine keeps its logs in its own `HANDOFF_STATE`.
 
 - The **project** is the name of Claude Code's project directory
   (`$CLAUDE_PROJECT_DIR`, the directory the session was opened in),
@@ -357,18 +364,27 @@ archive.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `HANDOFF_ROOT` | `${XDG_DATA_HOME:-~/.local/share}/claude-handoff` | Where handoffs and tips are stored; any directory works. |
+| `HANDOFF_ROOT` | `root=` in the config file, else `${XDG_DATA_HOME:-~/.local/share}/claude-handoff` | Where handoffs and tips are stored; any directory works. |
+| `HANDOFF_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/claude-handoff/config` | The config file (`root=`). |
+| `HANDOFF_STATE` | `${XDG_STATE_HOME:-~/.local/state}/claude-handoff` | Per-machine files: the tips log, the dashboard's PID file and log. |
 | `HANDOFF_KEEP` | `10` | Handoffs kept per task (a positive integer; anything else means 10). Older ones are deleted when you save. |
 | `HANDOFF_PORT` | `8765` | Default port of the `handoffs` dashboard. |
-| `TIPS_LOG_MAX` | `262144` | Size in bytes after which the tips log moves to `log.1.jsonl`. |
+| `TIPS_LOG_MAX` | `262144` | Size in bytes after which the tips log moves to `tips.1.jsonl`. |
 | `HANDOFF_BIN_DIR` | `~/.local/bin` (`$PREFIX/bin` on Termux) | Where `install.sh` puts `handoffs`. |
 | `HANDOFF_REF` | `main` | Branch or tag the piped install script fetches. |
 | `HANDOFF_REPO` | `https://github.com/v-kravchenko/claude-handoff` | Repository the piped install script fetches (a fork or a local `file://` path). |
 
-Set `HANDOFF_ROOT` in both places that need it: `env` in
-`~/.claude/settings.json` for Claude Code sessions, and your shell profile
-(`~/.bashrc`, `~/.zshrc`) for the `handoffs` dashboard started from a
-terminal. Otherwise the dashboard reads the default root and shows no tasks.
+To store handoffs elsewhere, put `root=` in the config file
+`${XDG_CONFIG_HOME:-~/.config}/claude-handoff/config` (or `HANDOFF_CONFIG`);
+every script and the dashboard read it, so nothing else needs to be set:
+
+```text
+# ~/.config/claude-handoff/config
+root=~/Notes/Handoffs
+```
+
+`HANDOFF_ROOT` overrides the file. The dashboard reads the file when it
+starts: after changing `root=`, restart it (`handoffs service restart`).
 
 Set them in your shell profile or in the `env` block of
 `~/.claude/settings.json`.

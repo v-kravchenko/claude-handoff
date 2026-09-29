@@ -16,7 +16,17 @@
 # Portable: bash 3.2+ (macOS), GNU and BSD userland, git 2.31+.
 set -uo pipefail
 
-ROOT="${HANDOFF_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-handoff}"
+# root: $HANDOFF_ROOT, else `root=` in the config file, else the default.
+HANDOFF_CONFIG="${HANDOFF_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-handoff/config}"
+config_root() {
+  local v
+  v=$(sed -n 's/^[[:space:]]*root[[:space:]]*=[[:space:]]*//p' "$HANDOFF_CONFIG" 2>/dev/null | tail -n 1)
+  v=${v%"${v##*[![:space:]]}"}
+  [[ $v == "~" || $v == "~/"* ]] && v=$HOME${v#\~}
+  printf '%s' "$v"
+}
+ROOT=${HANDOFF_ROOT:-$(config_root)}
+ROOT=${ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-handoff}
 KEEP="${HANDOFF_KEEP:-10}"
 [[ $KEEP =~ ^[1-9][0-9]*$ ]] || KEEP=10
 ARCHIVE=_archive

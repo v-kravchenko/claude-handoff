@@ -7,7 +7,7 @@ SCRIPT="$(cd "$(dirname "$0")/.." && pwd -P)/skills/handoff/handoff.sh"
 TMP=$(cd "$(mktemp -d "${TMPDIR:-/tmp}/handoff-test.XXXXXX")" && pwd -P)  # physical path (macOS /var -> /private/var)
 trap 'rm -rf "$TMP"' EXIT
 
-export HANDOFF_ROOT="$TMP/root"
+export HANDOFF_ROOT="$TMP/root" HANDOFF_STATE="$TMP/state"
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -322,6 +322,16 @@ OUT=$(env -u HANDOFF_ROOT -u XDG_DATA_HOME HOME="$TMP/h" "$SCRIPT" "$TMP/k/a~b" 
 has "$TMP/h/.local/share/claude-handoff/a-b/t/" "without XDG_DATA_HOME the root is ~/.local/share/claude-handoff"
 OUT=$(env -u HANDOFF_ROOT CLAUDE_CONFIG_DIR="$TMP/cfg" XDG_DATA_HOME="$TMP/xdg-data" "$SCRIPT" "$TMP/k/a~b" new t)
 lacks "$TMP/cfg" "CLAUDE_CONFIG_DIR is not the handoff root any more"
+# root= in the config file sets the root; HANDOFF_ROOT still wins.
+mkdir -p "$TMP/cfgh/claude-handoff"
+printf '# comment\nroot = ~/from-config  \n' >"$TMP/cfgh/claude-handoff/config"
+OUT=$(env -u HANDOFF_ROOT XDG_CONFIG_HOME="$TMP/cfgh" HOME="$TMP/h" "$SCRIPT" "$TMP/k/a~b" new t)
+has "$TMP/h/from-config/a-b/t/" "root= in the config file sets the root, ~ expanded"
+OUT=$(XDG_CONFIG_HOME="$TMP/cfgh" "$SCRIPT" "$TMP/k/a~b" new t)
+has "$HANDOFF_ROOT/a-b/t/" "HANDOFF_ROOT wins over the config file"
+OUT=$(env -u HANDOFF_ROOT XDG_CONFIG_HOME="$TMP/cfgh" HOME="$TMP/h" python3 -c \
+  'import sys; ns = {"__name__": "x"}; exec(open(sys.argv[1]).read(), ns); print(ns["handoff_root"]())' "$(dirname "$SCRIPT")/../../bin/handoffs" 2>&1)
+has "$TMP/h/from-config" "the dashboard reads root= from the config file"
 
 # A moved project keeps its handoffs; relative paths follow it.
 MV1="$TMP/old/mover"; mkdir -p "$MV1/sub"; cd "$MV1/sub" || exit 1
@@ -490,7 +500,7 @@ run "$TP" tips move wt-key2 global
 has "already global"
 run "$TP" tips move wt-key2 elsewhere
 has "usage: tips move"
-assert "events are logged" grep -q '"event":"refuted","project":"'"$KEYDIR"'","id":"wt-key"' "$TROOT/log.jsonl"
+assert "events are logged" grep -q '"event":"refuted","project":"'"$KEYDIR"'","id":"wt-key"' "$HANDOFF_STATE/tips.jsonl"
 
 # The hook reads Claude Code's PostToolUseFailure JSON; it stays silent while
 # the tips skill is not installed.
@@ -511,8 +521,8 @@ OUT=$("$TS/handoff/handoff.sh" "$TP" tips hook <<<"${HOOKIN/\"is_interrupt\":fal
 assert "hook is silent for an interrupt" [ -z "$OUT" ]
 OUT=$("$TS/handoff/handoff.sh" "$TP" tips hook </dev/null)
 assert "hook is silent on empty input" [ -z "$OUT" ]
-assert "hook logs the matched ids" grep -q '"event":"hook","project":"'"$KEYDIR"'","id":"no-tmp"' "$TROOT/log.jsonl"
-assert "hook does not log the error text" [ "$(grep '"event":"hook"' "$TROOT/log.jsonl" | grep -c 'failed to create')" = 0 ]
+assert "hook logs the matched ids" grep -q '"event":"hook","project":"'"$KEYDIR"'","id":"no-tmp"' "$HANDOFF_STATE/tips.jsonl"
+assert "hook does not log the error text" [ "$(grep '"event":"hook"' "$HANDOFF_STATE/tips.jsonl" | grep -c 'failed to create')" = 0 ]
 
 # The prompt hook reads Claude Code's UserPromptSubmit JSON: keyword items at a
 # word start, 2 items or one of 5+ chars, each tip once per session.
@@ -557,8 +567,8 @@ ph '{"session_id":"p5","prompt":"hello world"}'
 assert "prompt hook is silent without a match" [ -z "$OUT" ]
 ph ''
 assert "prompt hook is silent on empty input" [ -z "$OUT" ]
-assert "prompt hook logs the matched ids" grep -q '"event":"prompt-hook","project":"'"$KEYDIR"'","id":"rel"' "$TROOT/log.jsonl"
-assert "prompt hook does not log the prompt" [ "$(grep '"event":"prompt-hook"' "$TROOT/log.jsonl" | grep -c 'релізимо')" = 0 ]
+assert "prompt hook logs the matched ids" grep -q '"event":"prompt-hook","project":"'"$KEYDIR"'","id":"rel"' "$HANDOFF_STATE/tips.jsonl"
+assert "prompt hook does not log the prompt" [ "$(grep '"event":"prompt-hook"' "$HANDOFF_STATE/tips.jsonl" | grep -c 'релізимо')" = 0 ]
 rm -f "$TROOT/$KEYDIR/rel.md"
 TNM="$TMP/tipsnomark"; mkdir -p "$TNM/tips"; cp -R "$SKILLS/handoff" "$TNM/"
 printf -- '---\nname: tips\n---\nmine\n' >"$TNM/tips/SKILL.md"
@@ -603,12 +613,17 @@ run "$TP" tips search --error "ls: Permission denied"
 lacks "comma-kw" "error mode does not match a fragment of a quoted keyword"
 # The log keeps the found ids, never the query text.
 run "$TP" tips search "token=hunter2 comma message"
-assert "log keeps no query text" [ "$(grep -c hunter2 "$TROOT/log.jsonl")" = 0 ]
-assert "search logs the found ids" grep -q '"event":"search","project":"'"$KEYDIR"'","id":"comma-kw"' "$TROOT/log.jsonl"
-# Past TIPS_LOG_MAX bytes the log rotates to log.1.jsonl.
-OLD=$(wc -l <"$TROOT/log.jsonl")
+assert "log keeps no query text" [ "$(grep -c hunter2 "$HANDOFF_STATE/tips.jsonl")" = 0 ]
+assert "search logs the found ids" grep -q '"event":"search","project":"'"$KEYDIR"'","id":"comma-kw"' "$HANDOFF_STATE/tips.jsonl"
+# Past TIPS_LOG_MAX bytes the log rotates to tips.1.jsonl.
+OLD=$(wc -l <"$HANDOFF_STATE/tips.jsonl")
 OUT=$(TIPS_LOG_MAX=10 "$SCRIPT" "$TP" tips search "comma message" 2>&1)
-assert "log rotates past TIPS_LOG_MAX" [ "$(wc -l <"$TROOT/log.1.jsonl")" -eq "$OLD" ] && [ "$(wc -l <"$TROOT/log.jsonl")" -eq 1 ]
+assert "log rotates past TIPS_LOG_MAX" [ "$(wc -l <"$HANDOFF_STATE/tips.1.jsonl")" -eq "$OLD" ] && [ "$(wc -l <"$HANDOFF_STATE/tips.jsonl")" -eq 1 ]
+# A log the root kept (1.5.0 and older) moves to the state dir; the root keeps only .md files.
+printf '{"event":"old-root-log"}\n' >"$TROOT/log.jsonl"
+run "$TP" tips search "comma message"
+assert "the root's tips log moves to the state dir" [ ! -e "$TROOT/log.jsonl" ] && grep -q old-root-log "$HANDOFF_STATE/tips.jsonl"
+assert "the root has only .md files" [ -z "$(find "$HANDOFF_ROOT" -type f ! -name '*.md')" ]
 
 # Cites are checked in the session's checkout: a worktree, not the main repo.
 C2=$(git -C "$TP" rev-parse --short HEAD)
@@ -868,8 +883,8 @@ EOF
   assert "delete removes the tip file" [ ! -e "$D/_tips/home~gone/raw.md" ]
   assert "delete removes a global tip file" [ ! -e "$D/_tips/_global/g1.md" ]
   assert "delete keeps other tips" [ -f "$D/_tips/home~app/tip.md" ]
-  assert "tip deletes are logged" [ "$(grep -c '"via": "dashboard"' "$D/_tips/log.jsonl")" -eq 2 ]
-  assert "delete is logged" grep -q '"event": "deleted", "project": "home~gone", "id": "raw"' "$D/_tips/log.jsonl"
+  assert "tip deletes are logged" [ "$(grep -c '"via": "dashboard"' "$HANDOFF_STATE/tips.jsonl")" -eq 2 ]
+  assert "delete is logged" grep -q '"event": "deleted", "project": "home~gone", "id": "raw"' "$HANDOFF_STATE/tips.jsonl"
   assert "rename moves the task directory" [ -d "$D/home~app/beta" ]
   assert "rename leaves no old directory" [ ! -e "$D/home~app/alpha" ]
   assert "rename keeps the archived task archived" [ -d "$D/home~app/_archive/older" ]
@@ -923,13 +938,19 @@ EOF
   has "stopped (pid" "--stop stops the background dashboard"
   OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --stop 2>&1); rc=$?
   assert "--stop without a dashboard exits with 1" [ "$rc" -eq 1 ]
+  assert "--background keeps its PID file and log in the state dir" [ -f "$HANDOFF_STATE/handoffs.log" ] && [ ! -e "$D/.handoffs.log" ]
+  # A PID file left in the root may be another machine's: removed, never used.
+  printf '%s http://x/\n' "$$" >"$D/.handoffs.pid"; : >"$D/.handoffs.log"
+  OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --stop 2>&1); rc=$?
+  assert "--stop ignores and removes the root's PID file and log" [ "$rc" -eq 1 ] && [ ! -e "$D/.handoffs.pid" ] && [ ! -e "$D/.handoffs.log" ]
 
   # handoffs service: only --dry-run and the not-installed paths (no systemd/launchd in CI).
-  OUT=$(HANDOFF_SERVICE_KIND=systemd XDG_CONFIG_HOME="$TMP/xdg" HANDOFF_ROOT="$TMP/my root" \
+  OUT=$(HANDOFF_SERVICE_KIND=systemd XDG_CONFIG_HOME="$TMP/xdg" HANDOFF_STATE="$TMP/my state" \
     python3 "$DASH" service install --port 8801 --read-only --dry-run 2>&1)
   has "# $TMP/xdg/systemd/user/handoffs.service" "service unit goes to the systemd user dir"
   has "--no-open --port 8801 --read-only" "service runs the dashboard with the given options"
-  has "Environment=\"HANDOFF_ROOT=$TMP/my root\"" "service keeps HANDOFF_ROOT, quoted"
+  has "Environment=\"HANDOFF_STATE=$TMP/my state\"" "service keeps HANDOFF_STATE, quoted"
+  lacks "HANDOFF_ROOT" "service does not pin HANDOFF_ROOT: it reads the config file"
   has "systemctl --user enable --now handoffs.service" "service install enables the unit"
   assert "--dry-run writes nothing" [ ! -e "$TMP/xdg/systemd" ]
   OUT=$(HANDOFF_SERVICE_KIND=launchd HOME="$TMP/mac" python3 "$DASH" service install --dry-run 2>&1)

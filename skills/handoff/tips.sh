@@ -3,11 +3,13 @@
 # Sourced by handoff.sh (uses ROOT, PROJECT, key, in_git, repo_root, valid_task).
 #   $HANDOFF_ROOT/_tips/<project>/<id>.md   project tips
 #   $HANDOFF_ROOT/_tips/_global/<id>.md          global tips
-#   $HANDOFF_ROOT/_tips/log.jsonl                search/show/verify events (+ log.1.jsonl); the dashboard counts them
+#   $HANDOFF_STATE/tips.jsonl                    search/show/verify events (+ tips.1.jsonl); the dashboard counts them
+# The root holds only .md files; logs are per machine, in HANDOFF_STATE.
 # Tips live outside project dirs: every subdir of a project dir is a task.
 # The file name is the tip id. Search sees the current project and global only.
 
 TIPS_ROOT="$ROOT/_tips"
+STATE="${HANDOFF_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-handoff}"
 GLOBAL=_global
 TIPS_MAX=5
 SKILLS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -53,13 +55,17 @@ json_str() {
 
 # tips_log EVENT [IDS] [HITS]: IDS is a comma list. No query text is kept.
 # The dashboard counts these events per tip (offered, opened, verified...).
-# Past TIPS_LOG_MAX bytes the log moves to log.1.jsonl (one old copy).
+# Past TIPS_LOG_MAX bytes the log moves to tips.1.jsonl (one old copy).
+# A log left in the root by 1.5.0 and older is moved here first.
 tips_log() {
   tips_init
-  mkdir -p "$TIPS_ROOT" 2>/dev/null || return
-  local log=$TIPS_ROOT/log.jsonl size
+  mkdir -p "$STATE" 2>/dev/null || return
+  local log=$STATE/tips.jsonl size old
+  for old in log.1.jsonl log.jsonl; do
+    [[ -f $TIPS_ROOT/$old ]] && cat "$TIPS_ROOT/$old" >>"$log" 2>/dev/null && rm -f "$TIPS_ROOT/$old"
+  done
   size=$(wc -c <"$log" 2>/dev/null) || size=0
-  ((size > ${TIPS_LOG_MAX:-262144})) && mv -f "$log" "$TIPS_ROOT/log.1.jsonl" 2>/dev/null
+  ((size > ${TIPS_LOG_MAX:-262144})) && mv -f "$log" "$STATE/tips.1.jsonl" 2>/dev/null
   printf '{"ts":"%s","event":"%s","project":%s,"id":%s,"hits":%s}\n' \
     "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$1" "$(json_str "$TIPS_SLUG")" \
     "$(json_str "${2:-}")" "${3:-0}" >>"$log" 2>/dev/null

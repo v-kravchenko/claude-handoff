@@ -6,6 +6,28 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The config file `${XDG_CONFIG_HOME:-~/.config}/claude-handoff/config`
+  (or `HANDOFF_CONFIG`): `root=` sets the handoff root for every script and
+  the dashboard, instead of `HANDOFF_ROOT` in several places.
+  `HANDOFF_ROOT` still overrides it. `install.sh` does not write the file.
+- `handoffs service install` no longer copies `HANDOFF_ROOT` into the
+  unit/plist: the service reads `root=` from the config file. If you set
+  the root only with `HANDOFF_ROOT`, put `root=` in the config file and run
+  `handoffs service install` again.
+
+### Changed
+
+- `HANDOFF_ROOT` holds only the `.md` files of handoffs and tips, so several
+  machines can share one root. Files of each machine are kept in
+  `HANDOFF_STATE` (default `${XDG_STATE_HOME:-~/.local/state}/claude-handoff`):
+  the tips log (`tips.jsonl`, was `_tips/log.jsonl`) and the `--background`
+  dashboard's `handoffs.pid` and `handoffs.log` (were `.handoffs.pid` and
+  `.handoffs.log` in the root). The next tips event moves the old log there;
+  the dashboard still reads it until then. The old PID file and log are
+  removed when the dashboard starts or stops, and the old PID is not used.
+
 ## [1.5.0] - 2026-09-29
 
 ### Breaking

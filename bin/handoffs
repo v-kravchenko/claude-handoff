@@ -6,8 +6,10 @@ Usage: handoffs [--port N] [--host ADDR] [--no-open] [--read-only] [--background
        handoffs service install|uninstall|restart|status [--port N] [--dry-run]
 
 Serves a page with every task of every project under the handoff
-root ($HANDOFF_ROOT, else $XDG_DATA_HOME/claude-handoff, else
-~/.local/share/claude-handoff).
+root ($HANDOFF_ROOT, else `root=` in ~/.config/claude-handoff/config, else
+$XDG_DATA_HOME/claude-handoff, else ~/.local/share/claude-handoff). Logs and the PID file are per machine, in
+$HANDOFF_STATE (else $XDG_STATE_HOME/claude-handoff, else
+~/.local/state/claude-handoff).
 Data is read from disk on every request. Python 3.8+, standard library only.
 """
 
@@ -42,12 +44,40 @@ PORT_TRIES = 10
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 
+def config_path():
+    cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.environ.get("HANDOFF_CONFIG") or os.path.join(cfg, "claude-handoff", "config")
+
+
+def config_root():
+    """`root=` from the config file (the last one wins), or ""."""
+    root = ""
+    try:
+        with open(config_path(), encoding="utf-8") as fh:
+            for line in fh:
+                key, sep, value = line.partition("=")
+                if sep and key.strip() == "root":
+                    root = value.strip()
+    except OSError:
+        pass
+    return os.path.expanduser(root) if root == "~" or root.startswith("~/") else root
+
+
 def handoff_root():
-    root = os.environ.get("HANDOFF_ROOT")
+    root = os.environ.get("HANDOFF_ROOT") or config_root()
     if not root:
         data = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
         root = os.path.join(data, "claude-handoff")
     return root
+
+
+def state_dir():
+    """Per-machine files (logs, PID file); the root holds only .md files."""
+    d = os.environ.get("HANDOFF_STATE")
+    if not d:
+        st = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+        d = os.path.join(st, "claude-handoff")
+    return d
 
 
 # --- parsing ------------------------------------------------------------------
@@ -465,9 +495,12 @@ STAT_KEYS = {"show": "opened", "verified": "verified", "refuted": "refuted"}
 def tip_stats(root, known):
     """Counts log events per tip: offered, opened, verified, refuted, last (ts)."""
     stats = {}
-    for name in ("log.1.jsonl", "log.jsonl"):
+    # The root's log.jsonl is where 1.5.0 and older kept it.
+    paths = [os.path.join(root, TIPS, n) for n in ("log.1.jsonl", "log.jsonl")]
+    paths += [os.path.join(state_dir(), n) for n in ("tips.1.jsonl", "tips.jsonl")]
+    for path in paths:
         try:
-            with open(os.path.join(root, TIPS, name), encoding="utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 lines = fh.readlines()
         except OSError:
             continue
@@ -503,7 +536,8 @@ def delete_tip(root, slug, tid):
     event = {"ts": datetime.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"),
              "event": "deleted", "project": slug, "id": tid, "hits": 0, "via": "dashboard"}
     try:
-        with open(os.path.join(root, TIPS, "log.jsonl"), "a", encoding="utf-8") as fh:
+        os.makedirs(state_dir(), exist_ok=True)
+        with open(os.path.join(state_dir(), "tips.jsonl"), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(event, ensure_ascii=False) + "\n")
     except OSError:
         pass
@@ -669,8 +703,18 @@ def open_browser(url):
 
 # --- background & service -----------------------------------------------------
 
-PIDFILE = ".handoffs.pid"  # "<pid> <url>" of a --background dashboard
+PIDFILE = "handoffs.pid"  # "<pid> <url>" of a --background dashboard
 LABEL = "com.claude-handoff.handoffs"
+
+
+def drop_legacy():
+    """Removes the PID file and log 1.5.0 and older kept in the root. The PID
+    is not trusted: in a root shared by machines it may be another machine's."""
+    for name in (".handoffs.pid", ".handoffs.log"):
+        try:
+            os.remove(os.path.join(handoff_root(), name))
+        except OSError:
+            pass
 
 
 def pid_alive(pid):
@@ -695,14 +739,15 @@ def read_pidfile(path):
 
 def start_background(argv, no_open):
     """Re-run the dashboard detached, wait for its URL line, record the PID."""
-    root = handoff_root()
-    os.makedirs(root, exist_ok=True)
-    pidfile = os.path.join(root, PIDFILE)
+    state = state_dir()
+    os.makedirs(state, exist_ok=True)
+    pidfile = os.path.join(state, PIDFILE)
+    drop_legacy()
     pid, url = read_pidfile(pidfile)
     if pid:
         print("handoffs: already running at %s (pid %d; handoffs --stop)" % (url, pid))
         return 0
-    log = os.path.join(root, ".handoffs.log")
+    log = os.path.join(state, "handoffs.log")
     args = [a for a in argv if a != "--background"] + ["--no-open"]
     with open(log, "w", encoding="utf-8") as out:
         proc = subprocess.Popen([sys.executable, os.path.abspath(__file__)] + args,
@@ -737,7 +782,8 @@ def start_background(argv, no_open):
 
 
 def stop_background():
-    pidfile = os.path.join(handoff_root(), PIDFILE)
+    drop_legacy()
+    pidfile = os.path.join(state_dir(), PIDFILE)
     pid, _ = read_pidfile(pidfile)
     if os.path.exists(pidfile):
         os.remove(pidfile)
@@ -766,7 +812,9 @@ def service_path(kind):
 
 
 def service_env():
-    return {k: os.environ[k] for k in ("HANDOFF_ROOT", "XDG_DATA_HOME", "HANDOFF_PORT") if os.environ.get(k)}
+    # Not HANDOFF_ROOT: the service reads root= from the config file on every
+    # start, so changing it needs only `handoffs service restart`.
+    return {k: os.environ[k] for k in ("HANDOFF_CONFIG", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "HANDOFF_STATE", "XDG_STATE_HOME", "HANDOFF_PORT") if os.environ.get(k)}
 
 
 def systemd_quote(s):
@@ -926,6 +974,7 @@ def main(argv=None):
         print("warning: listening on %s; other machines may reach the dashboard" % host, file=sys.stderr)
     if not args.read_only:
         Handler.token = secrets.token_urlsafe(24)
+    drop_legacy()
     server = make_server(host, args.port)
     port = server.server_address[1]
     shown = "127.0.0.1" if host in ("0.0.0.0", "::") else host
