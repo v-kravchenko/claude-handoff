@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 # Installs the handoff and pickup skills as personal skills
 # (${CLAUDE_CONFIG_DIR:-~/.claude}/skills), so they run as /handoff and /pickup.
-# Optional parts (asked interactively, or chosen with flags):
+# Parts (asked interactively, or chosen with flags):
+#   skills:    /handoff and /pickup (--no-skills: e.g. only the dashboard, for
+#              the plugin or a machine without Claude Code);
 #   dashboard: the `handoffs` command in HANDOFF_BIN_DIR (default: ~/.local/bin,
 #              or $PREFIX/bin on Termux);
 #   tips:      the /tips skill, a marked block in ~/.claude/CLAUDE.md and
 #              PostToolUseFailure + UserPromptSubmit hooks in
 #              ~/.claude/settings.json (needs python3).
 # Declining a part that is installed removes it.
-# Usage: ./install.sh [--dashboard|--no-dashboard] [--tips|--no-tips] | --uninstall
+# Usage: ./install.sh [--skills|--no-skills] [--dashboard|--no-dashboard] [--tips|--no-tips]
+#        ./install.sh --dashboard-only   (= --no-skills --dashboard --no-tips)
+#        ./install.sh --uninstall
 #    or: curl -fsSL https://raw.githubusercontent.com/v-kravchenko/claude-handoff/main/install.sh | bash [-s -- FLAGS]
 # Outside a clone (piped from curl) it fetches the repository into a temp dir
 # (HANDOFF_REPO, HANDOFF_REF: a branch or tag), runs its install.sh and
 # deletes the copy; --uninstall needs no copy.
 # The questions default to the previous choices. Without a terminal and
-# without flags, the previous choices are kept (skills/handoff/install.conf;
-# a fresh install gets the dashboard, not tips).
+# without flags, the previous choices are kept ($HANDOFF_STATE/install.conf;
+# a fresh install gets the skills and the dashboard, not tips).
 # Saved handoffs and tips ($HANDOFF_ROOT) are never touched.
 set -euo pipefail
 
@@ -41,7 +45,12 @@ fi
 DASH=handoffs
 BEGIN='<!-- claude-handoff:tips -->'
 END='<!-- /claude-handoff:tips -->'
-CONF="$DEST/handoff/install.conf"
+# Per machine, like the dashboard: a dashboard-only install has no skill dir.
+STATE=${HANDOFF_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-handoff}
+CONF="$STATE/install.conf"
+# Before 1.5.4 the choices were kept in the handoff skill.
+OLD_CONF="$DEST/handoff/install.conf"
+USAGE="usage: install.sh [--skills|--no-skills] [--dashboard|--no-dashboard] [--tips|--no-tips] | --dashboard-only | --uninstall"
 OURS='part of claude-handoff'
 HOOK_CMD="\"$DEST/handoff/handoff.sh\" \"\${CLAUDE_PROJECT_DIR:-.}\" tips hook"
 PROMPT_CMD="\"$DEST/handoff/handoff.sh\" \"\${CLAUDE_PROJECT_DIR:-.}\" tips prompt-hook"
@@ -55,13 +64,11 @@ ask() {
 
 # install_skill NAME [SOURCE_DIR]: copies next to DEST, then swaps the
 # directories, so an interrupted install never leaves the skill missing.
-# install.conf (in the handoff skill) moves over with it.
 install_skill() {
   local new="$CFG/.claude-handoff-new" old="$CFG/.claude-handoff-old"
   if [[ -d $DEST/$1 ]]; then echo "updating $DEST/$1"; else echo "installing $DEST/$1"; fi
   rm -rf "$new" "$old"
   cp -R "${2:-$SRC}/$1" "$new"
-  [[ -f $DEST/$1/install.conf ]] && cp "$DEST/$1/install.conf" "$new/"
   if [[ -e $DEST/$1 ]]; then mv "$DEST/$1" "$old"; fi
   mv "$new" "$DEST/$1"
   rm -rf "$old"
@@ -96,7 +103,7 @@ install_dashboard() {
     *) echo "note: $BIN is not in PATH; add it to run \`$DASH\`" ;;
   esac
   command -v python3 >/dev/null 2>&1 ||
-    echo "note: \`$DASH\` needs python3 (Termux: pkg install python)"
+    echo "warning: \`$DASH\` needs python3 (Termux: pkg install python)" >&2
 }
 
 remove_dashboard() {
@@ -249,8 +256,10 @@ remove_tips() {
 
 # prev NAME: the previous y/n choice from install.conf, or nothing.
 prev() {
-  [[ -f $CONF ]] || return 0
-  sed -n "s/^$1=\([yn]\)\$/\1/p" "$CONF" | head -n 1
+  local f=$CONF
+  [[ -f $f ]] || f=$OLD_CONF
+  [[ -f $f ]] || return 0
+  sed -n "s/^$1=\([yn]\)\$/\1/p" "$f" | head -n 1
 }
 
 # bootstrap ARGS: fetches the repository into a temp dir and runs its
@@ -277,22 +286,30 @@ bootstrap() {
 }
 
 main() {
-  local dashboard="" tips="" uninstall=0 arg s
+  local skills="" dashboard="" tips="" uninstall=0 arg s
   for arg in "$@"; do
     case $arg in
+      --skills) skills=y ;;
+      --no-skills) skills=n ;;
+      --dashboard-only) skills=n dashboard=y tips=n ;;
       --dashboard) dashboard=y ;;
       --no-dashboard) dashboard=n ;;
       --tips) tips=y ;;
       --no-tips) tips=n ;;
       --uninstall) uninstall=1 ;;
-      *) echo "usage: install.sh [--dashboard|--no-dashboard] [--tips|--no-tips] | --uninstall" >&2; exit 2 ;;
+      *) echo "$USAGE" >&2; exit 2 ;;
     esac
   done
+  # The tips hooks run the handoff skill's script.
+  if [[ $skills == n && $tips == y ]]; then
+    echo "error: tips need the skills (drop --no-skills or --tips)" >&2; exit 2
+  fi
 
   if ((uninstall)); then
     for s in "${SKILLS[@]}"; do remove_skill "$s"; done
     remove_tips
     remove_dashboard
+    rm -f "$CONF"
     echo "done: saved handoffs and tips were kept (see root= in ${HANDOFF_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-handoff/config}; default ${XDG_DATA_HOME:-$HOME/.local/share}/claude-handoff)"
     exit 0
   fi
@@ -302,31 +319,57 @@ main() {
     exit
   fi
   if [[ -t 0 ]]; then
-    local d t
-    d=$(prev dashboard) t=$(prev tips)
+    local k d t
+    k=$(prev skills) d=$(prev dashboard) t=$(prev tips)
+    [[ -n $skills ]] || skills=$(ask "Install the /handoff and /pickup skills?" "${k:-y}")
     [[ -n $dashboard ]] || dashboard=$(ask "Install the \`$DASH\` web dashboard?" "${d:-y}")
-    [[ -n $tips ]] || tips=$(ask "Install tips (/tips skill, a block in $MD, hooks in $SETTINGS)?" "${t:-y}")
+    if [[ $skills == n ]]; then
+      tips=n
+    else
+      [[ -n $tips ]] || tips=$(ask "Install tips (/tips skill, a block in $MD, hooks in $SETTINGS)?" "${t:-y}")
+    fi
   else
+    # Before install.conf had skills=, the skills were always installed.
+    [[ -n $skills ]] || skills=$(prev skills)
+    [[ -n $skills ]] || skills=y
     # Before install.conf existed, the dashboard was always installed.
     [[ -n $dashboard ]] || dashboard=$(prev dashboard)
     [[ -n $dashboard ]] || dashboard=y
-    if [[ -z $tips ]]; then
+    if [[ $skills == n ]]; then
+      tips=n
+    elif [[ -z $tips ]]; then
       tips=$(prev tips)
       [[ -n $tips ]] || { tips=n; [[ -d $DEST/tips ]] && ! foreign_tips && tips=y; }
       [[ $tips == n ]] && echo "note: tips are not installed; rerun with --tips to add them"
     fi
   fi
 
-  mkdir -p "$DEST"
-  for s in "${SKILLS[@]}"; do install_skill "$s"; done
-  chmod +x "$DEST/handoff/handoff.sh"
+  if [[ $skills == n && $dashboard == n ]]; then
+    echo "error: nothing to install; use --uninstall to remove everything" >&2; exit 2
+  fi
+
+  if [[ $skills == y ]]; then
+    mkdir -p "$DEST"
+    for s in "${SKILLS[@]}"; do install_skill "$s"; done
+    chmod +x "$DEST/handoff/handoff.sh"
+  fi
   if [[ $dashboard == y ]]; then install_dashboard; else remove_dashboard; fi
   if [[ $tips == y ]]; then install_tips; else remove_tips; fi
-  printf 'dashboard=%s\ntips=%s\n' "$dashboard" "$tips" >"$CONF"
+  # Tips first: their hooks call the handoff skill.
+  if [[ $skills == n ]]; then
+    for s in "${SKILLS[@]}"; do remove_skill "$s"; done
+  fi
+  mkdir -p "$STATE"
+  printf 'skills=%s\ndashboard=%s\ntips=%s\n' "$skills" "$dashboard" "$tips" >"$CONF"
+  rm -f "$OLD_CONF"
 
-  echo "done: restart Claude Code (or start a new session), then use /handoff and /pickup"
-  [[ $tips == y ]] && echo "      and /tips"
-  [[ $dashboard == y ]] && echo "      run \`$DASH\` for the dashboard"
+  if [[ $skills == y ]]; then
+    echo "done: restart Claude Code (or start a new session), then use /handoff and /pickup"
+    [[ $tips == y ]] && echo "      and /tips"
+    [[ $dashboard == y ]] && echo "      run \`$DASH\` for the dashboard"
+  else
+    echo "done: run \`$DASH\` for the dashboard"
+  fi
   exit 0
 }
 

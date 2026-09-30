@@ -1091,6 +1091,36 @@ EOF
   assert "uninstall removes the CLAUDE.md block" [ "$(cat "$IC/CLAUDE.md")" = "$(printf '# mine\nkeep me')" ]
   assert "uninstall removes our hook" [ "$(scount "$OURS")" = 0 ]
   assert "uninstall removes our prompt hook" [ "$(scount "$POURS")" = 0 ]
+  # Dashboard only: no skills, no tips; the choice is kept in $HANDOFF_STATE.
+  inst --tips --dashboard
+  inst --dashboard-only
+  assert "--dashboard-only installs the dashboard" [ -x "$TMP/ibin/handoffs" ]
+  assert "--dashboard-only removes the skills" [ -z "$(ls -A "$IC/skills")" ]
+  assert "--dashboard-only removes the CLAUDE.md block" [ "$(cat "$IC/CLAUDE.md")" = "$(printf '# mine\nkeep me')" ]
+  assert "--dashboard-only removes our hooks" [ "$(scount "$OURS"), $(scount "$POURS")" = "0, 0" ]
+  assert "install.conf is kept in HANDOFF_STATE" grep -qx 'skills=n' "$HANDOFF_STATE/install.conf"
+  has "done: run \`handoffs\`" "--dashboard-only does not mention restarting Claude Code"
+  inst
+  assert "reinstall without a terminal stays dashboard-only" [ ! -e "$IC/skills/handoff" ]
+  assert "reinstall without a terminal keeps the dashboard" [ -x "$TMP/ibin/handoffs" ]
+  inst --no-skills --tips
+  has "tips need the skills" "--no-skills --tips is refused"
+  inst --dashboard-only --tips
+  has "tips need the skills" "--dashboard-only --tips is refused"
+  inst --no-skills --no-dashboard
+  has "nothing to install" "--no-skills --no-dashboard is refused"
+  assert "a refused install removes nothing" [ -x "$TMP/ibin/handoffs" ]
+  inst --skills
+  assert "--skills brings the skills back" [ -f "$IC/skills/handoff/handoff.sh" ]
+  # A pre-1.5.4 install.conf in the handoff skill is read, then moved.
+  rm -f "$HANDOFF_STATE/install.conf"
+  printf 'dashboard=n\ntips=n\n' >"$IC/skills/handoff/install.conf"
+  inst
+  assert "the old install.conf is read" [ ! -e "$TMP/ibin/handoffs" ]
+  assert "the old install.conf is removed" [ ! -e "$IC/skills/handoff/install.conf" ]
+  assert "the old install.conf moves to HANDOFF_STATE" grep -qx 'dashboard=n' "$HANDOFF_STATE/install.conf"
+  inst --uninstall
+  assert "uninstall removes install.conf" [ ! -e "$HANDOFF_STATE/install.conf" ]
   printf '{"only": "ours"}\n' >"$IC/settings.json"
   inst --tips; inst --uninstall
   assert "uninstall drops an emptied hooks key" [ "$(scount 'sorted(s)')" = "['only']" ]
@@ -1142,8 +1172,8 @@ EOF
   assert "install.conf keeps tips" [ -f "$IC/skills/tips/SKILL.md" ]
   printf 'old\n' >"$IC/skills/handoff/stale"; inst
   assert "reinstall drops files no longer shipped" [ ! -e "$IC/skills/handoff/stale" ]
-  assert "reinstall keeps install.conf" [ -f "$IC/skills/handoff/install.conf" ]
-  rm -f "$IC/skills/handoff/install.conf"; inst
+  assert "reinstall keeps install.conf" [ -f "$HANDOFF_STATE/install.conf" ]
+  rm -f "$HANDOFF_STATE/install.conf"; inst
   assert "an install without install.conf gets the dashboard" [ -x "$TMP/ibin/handoffs" ]
 fi
 

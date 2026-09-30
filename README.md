@@ -59,8 +59,11 @@ This gives you the short commands `/handoff` and `/pickup` and the optional
 dashboard and tips. The script fetches the repository into a temporary
 directory (with git, or as a tarball without it), copies the skills to
 `~/.claude/skills` (respects `CLAUDE_CONFIG_DIR`) and deletes the temporary
-copy. It asks two questions (the defaults are your previous answers):
+copy. It asks up to three questions (the defaults are your previous answers):
 
+- **Skills**: `/handoff` and `/pickup`. Say no to install only the dashboard
+  (for the [plugin](#as-a-plugin), or on a machine that only views a shared
+  root); then there are no tips either.
 - **Dashboard**: installs the `handoffs` command (see below).
 - **Tips**: installs the `/tips` skill, adds a marked block to
   `~/.claude/CLAUDE.md` (`<!-- claude-handoff:tips -->`) that tells the agent
@@ -72,14 +75,17 @@ copy. It asks two questions (the defaults are your previous answers):
   `CLAUDE.md` block whose end marker was removed (fix it by hand).
 
 Answering no removes a part that is installed. Flags skip the questions:
-`--dashboard`, `--no-dashboard`, `--tips`, `--no-tips`. Without a terminal
-and without flags, the previous choices are kept (saved in
-`skills/handoff/install.conf`; a fresh install gets the dashboard, not tips).
+`--skills`, `--no-skills`, `--dashboard`, `--no-dashboard`, `--tips`,
+`--no-tips`, and `--dashboard-only` (`--no-skills --dashboard --no-tips`).
+Without a terminal and without flags, the previous choices are kept (saved
+in `$HANDOFF_STATE/install.conf`; a fresh install gets the skills and the
+dashboard, not tips).
 
 | Task | Command |
 | --- | --- |
 | Install or update | `curl -fsSL https://raw.githubusercontent.com/v-kravchenko/claude-handoff/main/install.sh \| bash` |
 | With flags | `... \| bash -s -- --tips --no-dashboard` |
+| Only the dashboard | `... \| bash -s -- --dashboard-only` |
 | A release | `... \| HANDOFF_REF=v1.2.2 bash` (a branch or tag) |
 | Uninstall | `... \| bash -s -- --uninstall` |
 
@@ -110,8 +116,8 @@ In Claude Code:
 
 Plugin skills are namespaced, so the commands are **`/handoff:handoff`** and
 **`/handoff:pickup`**. Update with `/plugin marketplace update claude-handoff`.
-The plugin has no [tips](#tips) and no dashboard command (run `bin/handoffs`
-from a clone): tips need the `/tips` skill, a block in `CLAUDE.md` and
+The plugin has no [tips](#tips) and no dashboard command; add the command
+with the install script's `--dashboard-only`. Tips need the `/tips` skill, a block in `CLAUDE.md` and
 hooks, so they come only with the install script.
 
 Start a new Claude Code session after installing.
@@ -322,6 +328,7 @@ $HANDOFF_STATE/                     # ~/.local/state/claude-handoff by default; 
 ├── paths                           # this machine's project paths: `<project><TAB><dir>` lines
 ├── tips.jsonl                      # tip events for the dashboard stats (no query text); rotated to tips.1.jsonl
 ├── handoffs.pid                    # the `handoffs --background` dashboard
+├── install.conf                    # install.sh choices
 └── handoffs.log
 ```
 

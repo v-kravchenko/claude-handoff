@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-09-30
+
+### Added
+
+- `install.sh --dashboard-only` (or `--no-skills`, or answering no to the
+  new *skills* question) installs only the `handoffs` command, e.g. next to
+  the plugin or on a machine that only views a shared root. Switching to it
+  removes the installed skills and tips.
+
+### Changed
+
+- The installer keeps its choices in `$HANDOFF_STATE/install.conf` instead
+  of `skills/handoff/install.conf`; the old file is read once and removed.
+- A missing python3 is a warning when the dashboard is installed.
+
 ## [1.5.3] - 2026-09-30
 
 ### Added
@@ -415,6 +430,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.5.4]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.0...v1.5.1
