@@ -19,15 +19,18 @@ set -uo pipefail
 
 # root: $HANDOFF_ROOT, else `root=` in the config file, else the default.
 HANDOFF_CONFIG="${HANDOFF_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-handoff/config}"
-config_root() {
+# config_value NAME: `NAME = value` from the config file (the last one wins),
+# a leading ~ expanded.
+config_value() {
   local v
-  v=$(sed -n 's/^[[:space:]]*root[[:space:]]*=[[:space:]]*//p' "$HANDOFF_CONFIG" 2>/dev/null | tail -n 1)
-  v=${v%"${v##*[![:space:]]}"}
+  v=$(awk -v k="$1" '{ i = index($0, "="); if (!i) next; n = substr($0, 1, i - 1)
+    gsub(/^[ \t]+|[ \t]+$/, "", n); if (n != k) next
+    v = substr($0, i + 1); gsub(/^[ \t]+|[ \t]+$/, "", v) } END { printf "%s", v }' "$HANDOFF_CONFIG" 2>/dev/null)
   # shellcheck disable=SC2088  # a literal ~ in the file
   [[ $v == "~" || $v == "~/"* ]] && v=$HOME${v#\~}
   printf '%s' "$v"
 }
-ROOT=${HANDOFF_ROOT:-$(config_root)}
+ROOT=${HANDOFF_ROOT:-$(config_value root)}
 ROOT=${ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-handoff}
 KEEP="${HANDOFF_KEEP:-10}"
 [[ $KEEP =~ ^[1-9][0-9]*$ ]] || KEEP=10
@@ -79,6 +82,43 @@ key() {
 
 # Absolute path of the project dir.
 project_dir() { (cd "$PROJECT" && pwd -P); }
+
+# This machine's path of each project, for the dashboard (Resume's `cd`), in
+# $STATE/paths: `key<TAB>path` lines, written only here. `new` and `show`
+# record the project dir; `path.<key> = DIR` in the config file overrides it.
+state_path() { awk -F'\t' -v k="$1" '$1 == k { p = $2 } END { printf "%s", p }' "$STATE/paths" 2>/dev/null; }
+set_path() {
+  local f=$STATE/paths tmp
+  mkdir -p "$STATE" 2>/dev/null && tmp=$(mktemp "$f.XXXXXX" 2>/dev/null) || return
+  if { [[ ! -f $f ]] || awk -F'\t' -v k="$1" '$1 != k' "$f"; } >"$tmp" &&
+    printf '%s\t%s\n' "$1" "$2" >>"$tmp" && mv -f -- "$tmp" "$f"; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+# remember: records the project dir, unless the key already has another path
+# here that still exists (a second copy of a project named the same): then it
+# prints `path: conflict` and `link` replaces it.
+remember() {
+  local k=${KEY#"$ROOT"/} pd old
+  pd=$(project_dir) || return
+  [[ $pd == *$'\t'* || $pd == *$'\n'* || -n $(config_value "path.$k") ]] && return
+  old=$(state_path "$k")
+  [[ $old == "$pd" ]] && return
+  if [[ -n $old && -d $old ]]; then
+    echo "path: conflict @$k is at $old on this machine, not $pd (to make $pd its path: handoff.sh link)"
+  else
+    set_path "$k" "$pd"
+  fi
+}
+cmd_link() {
+  local k=${KEY#"$ROOT"/} pd
+  pd=$(project_dir) || return
+  [[ $pd == *$'\t'* || $pd == *$'\n'* ]] && { echo "INVALID PATH: $pd"; return; }
+  set_path "$k" "$pd" && echo "linked: @$k -> $pd"
+  [[ -n $(config_value "path.$k") ]] && echo "note: path.$k in $HANDOFF_CONFIG still overrides it"
+}
 
 # Path for a handoff: relative inside the project (`.` for the project
 # itself), ~/... under $HOME, else absolute.
@@ -248,6 +288,7 @@ cmd_new() {
   local t=${1#@} f prev=""
   valid_task "$t" || { echo "INVALID TASK: '$t' (use lowercase a-z0-9._-)"; return; }
   mkdir -p "$(key)" || return
+  remember
   f="$KEY/$t.md"
   if [[ -f $f ]]; then prev=$(to_history "$f" "$t")
   elif [[ ! -f $KEY/$ARCHIVE/$t.md ]]; then prev=$(handoffs "$t" | tail -n 1)
@@ -375,6 +416,7 @@ cmd_show() {
   echo "file: $f"
   echo "task: $t"
   project_line
+  remember
   local from list; from=$(field from "$f")
   valid_task "$from" && echo "fork of: @$from ($(task_status "$from"))"
   echo
@@ -434,7 +476,7 @@ cmd_describe() {
 # shellcheck source=SCRIPTDIR/tips.sh
 . "$(dirname "${BASH_SOURCE[0]}")/tips.sh"
 
-USAGE="usage: handoff.sh PROJECT_DIR meta|git|tasks|describe [--parent|--no-parent] [TEXT]|new TASK|cancel TASK|prune TASK|done TASK|restore TASK|stale FILE|show [@TASK|FILE]|tips ..."
+USAGE="usage: handoff.sh PROJECT_DIR meta|git|tasks|describe [--parent|--no-parent] [TEXT]|new TASK|cancel TASK|prune TASK|done TASK|restore TASK|stale FILE|show [@TASK|FILE]|link|tips ..."
 
 if [[ -z $PROJECT || ! -d $PROJECT ]]; then
   echo "$USAGE"
@@ -460,6 +502,7 @@ case "$CMD" in
   restore) cmd_restore "${3:-}" ;;
   stale) cmd_stale "${3:-}" ;;
   show) cmd_show "${3:-}" ;;
+  link) cmd_link ;;
   tips) shift 2; cmd_tips "$@" ;;
   *) echo "$USAGE" ;;
 esac

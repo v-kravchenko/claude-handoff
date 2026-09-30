@@ -4,12 +4,16 @@
 Usage: handoffs [--port N] [--host ADDR] [--no-open] [--read-only] [--background | --stop]
                 [--json] [--version]
        handoffs service install|uninstall|restart|status [--port N] [--dry-run]
+       handoffs paths [--prune]
 
 Serves a page with every task of every project under the handoff
 root ($HANDOFF_ROOT, else `root=` in ~/.config/claude-handoff/config, else
 $XDG_DATA_HOME/claude-handoff, else ~/.local/share/claude-handoff). Logs and the PID file are per machine, in
 $HANDOFF_STATE (else $XDG_STATE_HOME/claude-handoff, else
-~/.local/state/claude-handoff).
+~/.local/state/claude-handoff), like this machine's project paths
+(`paths`, recorded by /handoff and /pickup; `path.<key> =` in the config
+file overrides one): a project's path is that one if it exists, else the
+newest `project:` of its handoffs that exists here.
 Data is read from disk on every request. Python 3.8+, standard library only.
 """
 
@@ -34,7 +38,7 @@ import time
 import urllib.parse
 import webbrowser
 
-VERSION = "1.5.2"
+VERSION = "1.5.3"
 ARCHIVE = "_archive"
 HISTORY = "_history"  # older handoffs: <slug>/_history/<task>/<stamp>.md
 TIPS = "_tips"  # tips store (skills/handoff/tips.sh), not a project
@@ -50,18 +54,27 @@ def config_path():
     return os.environ.get("HANDOFF_CONFIG") or os.path.join(cfg, "claude-handoff", "config")
 
 
-def config_root():
-    """`root=` from the config file (the last one wins), or ""."""
-    root = ""
+def expand_home(path):
+    return os.path.expanduser(path) if path == "~" or path.startswith("~/") else path
+
+
+def config_values():
+    """`name = value` lines of the config file (the last one wins)."""
+    values = {}
     try:
         with open(config_path(), encoding="utf-8") as fh:
             for line in fh:
                 key, sep, value = line.partition("=")
-                if sep and key.strip() == "root":
-                    root = value.strip()
+                if sep:
+                    values[key.strip()] = value.strip()
     except OSError:
         pass
-    return os.path.expanduser(root) if root == "~" or root.startswith("~/") else root
+    return values
+
+
+def config_root():
+    """`root=` from the config file, or ""."""
+    return expand_home(config_values().get("root", ""))
 
 
 def handoff_root():
@@ -79,6 +92,60 @@ def state_dir():
         st = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
         d = os.path.join(st, "claude-handoff")
     return d
+
+
+PATHS = "paths"
+
+
+def read_paths():
+    """This machine's project paths: key -> path, from `new`/`show` of
+    handoff.sh ($HANDOFF_STATE/paths)."""
+    out = {}
+    try:
+        with open(os.path.join(state_dir(), PATHS), encoding="utf-8") as fh:
+            for line in fh:
+                key, sep, path = line.rstrip("\n").partition("\t")
+                if sep and key and path:
+                    out[key] = path
+    except OSError:
+        pass
+    return out
+
+
+def config_paths():
+    """Key -> path from `path.<key> =` lines of the config file."""
+    return {n[5:]: expand_home(v) for n, v in config_values().items() if n.startswith("path.") and n[5:] and v}
+
+
+def machine_paths():
+    """Key -> this machine's candidate paths of the project: `path.<key> =`
+    in the config file, then the recorded one."""
+    out = {}
+    for paths in (config_paths(), read_paths()):
+        for key, path in paths.items():
+            out.setdefault(key, []).append(path)
+    return out
+
+
+def paths_main(argv):
+    ap = argparse.ArgumentParser(prog="handoffs paths",
+                                 description="This machine's project paths (the dashboard's `cd`).")
+    ap.add_argument("--prune", action="store_true", help="forget the recorded paths that no longer exist")
+    args = ap.parse_args(argv)
+    recorded = read_paths()
+    rows = [(k, p, "config") for k, p in config_paths().items()] + [(k, p, "") for k, p in recorded.items()]
+    for key, path, kind in sorted(rows, key=lambda r: (r[0], r[2] != "config")):
+        notes = [n for n in (kind, "" if os.path.isdir(path) else "missing") if n]
+        print("%s\t%s%s" % (key, path, "  (%s)" % ", ".join(notes) if notes else ""))
+    gone = [k for k, p in recorded.items() if not os.path.isdir(p)]
+    if args.prune and gone:
+        f = os.path.join(state_dir(), PATHS)
+        tmp = "%s.%d.tmp" % (f, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines("%s\t%s\n" % (k, p) for k, p in recorded.items() if k not in gone)
+        os.replace(tmp, f)
+        print("forgot: " + ", ".join(sorted(gone)))
+    return 0
 
 
 # --- parsing ------------------------------------------------------------------
@@ -435,21 +502,22 @@ def collect(root):
             t["slug"] = slug
     out.sort(key=lambda t: t["saved"], reverse=True)
     # One project per key, though its handoffs may come from other paths or
-    # machines: its path is the newest one that exists here, else the newest.
-    names, where = {}, {}
+    # machines: its path is this machine's one (machine_paths) if it exists,
+    # else the newest in the handoffs that exists here, else the newest.
+    names, where, mine = {}, {}, machine_paths()
     for t in out:
         paths = where.setdefault(t["slug"], [])
         if t["project"] and t["project"] not in paths:
             paths.append(t["project"])
     for slug, paths in where.items():
-        here = [p for p in paths if os.path.isdir(p)]
+        here = [p for p in mine.get(slug, []) + paths if os.path.isdir(p)]
         where[slug] = (here or paths or [slug])[0]
     for t in out:
         t["project"] = where[t["slug"]]
         t["project_exists"] = os.path.isdir(t["project"])
     tips = collect_tips(root)
     for slug in {t["slug"] for t in tips if t["slug"] != GLOBAL} - set(where):
-        where[slug] = slug
+        where[slug] = next((p for p in mine.get(slug, []) if os.path.isdir(p)), slug)
     for slug, path in where.items():
         names[path] = {"name": project_name(slug), "desc": describe(root, slug)}
     return {"root": root, "home": os.path.expanduser("~"), "version": VERSION, "tasks": out,
@@ -965,6 +1033,8 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["service"]:
         return service_main(argv[1:])
+    if argv[:1] == ["paths"]:
+        return paths_main(argv[1:])
     ap = argparse.ArgumentParser(prog="handoffs", description="Local web dashboard for claude-handoff tasks.")
     env_port = os.environ.get("HANDOFF_PORT") or "8765"
     if not env_port.isdigit() or int(env_port) > 65535:

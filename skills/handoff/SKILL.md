@@ -69,7 +69,10 @@ Run each `handoff.sh` command in its own Bash call, exactly as written: no
    prints the target `file` (`<task>.md`), the `task` for the frontmatter and
    the task's `latest` handoff, which it has just moved to the task's history.
    If it prints a `note:` about an archived task, mention it
-   (with how to restore it) in your final reply.
+   (with how to restore it) in your final reply. If it prints
+   `path: conflict`, say so in your final reply and ask whether this
+   directory is now the project's path on this machine; if the user agrees,
+   run `${CLAUDE_SKILL_DIR}/handoff.sh "${CLAUDE_PROJECT_DIR}" link`.
 4. If `latest` is not empty and that handoff is not in this conversation (the
    session did not start with `/pickup` of this task, or the context was
    compacted), read it. Carry over only open decisions, rejected alternatives

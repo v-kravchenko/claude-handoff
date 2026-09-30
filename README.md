@@ -244,6 +244,8 @@ task or tip opens it in a side panel; `Esc` or a tap outside closes it.
 `/` focuses the search, `Esc` clears it.
 
 - **Copy** (on the row and in the panel) copies the resume command, `cd ~/'project' && claude "/pickup @task"`.
+  The path is this machine's one (see [Several machines](#several-machines)); a
+  project with no path here is marked *path missing* and the command has no `cd`.
 - The side panel shows the branch and commit at
   handoff time and renders the whole latest handoff. The *History* tab
   lists every saved version, opens any of them and shows the diff against
@@ -317,6 +319,7 @@ $HANDOFF_ROOT/_tips/
 ├── _global/<id>.md                 # global tips
 └── <project>/<id>.md               # project tips
 $HANDOFF_STATE/                     # ~/.local/state/claude-handoff by default; per machine
+├── paths                           # this machine's project paths: `<project><TAB><dir>` lines
 ├── tips.jsonl                      # tip events for the dashboard stats (no query text); rotated to tips.1.jsonl
 ├── handoffs.pid                    # the `handoffs --background` dashboard
 └── handoffs.log
@@ -324,6 +327,22 @@ $HANDOFF_STATE/                     # ~/.local/state/claude-handoff by default; 
 
 The root holds only `.md` files, so several machines can share it; each
 machine keeps its logs in its own `HANDOFF_STATE`.
+
+### Several machines
+
+A project is the same on every machine whose project directory has the same
+name: `/home/a/StudioProjects/app` and `/home/b/app` both use `app/`. Each
+handoff's `project:` is the path on the machine that saved it, so each
+machine keeps its own paths in `$HANDOFF_STATE/paths`: `/handoff` and
+`/pickup` record the project directory there, silently. If the project
+already has another path here that still exists (a second copy named the
+same), they keep it and ask; `handoff.sh <dir> link` makes `<dir>` the path.
+
+The dashboard takes a project's path from, in order, whichever exists on
+this machine: `path.<project>=` in the config file, the recorded path, the
+newest `project:` of its handoffs. `handoffs paths` lists the paths,
+`handoffs paths --prune` forgets the recorded ones that no longer exist
+(nothing is forgotten on its own: a disk may just be unmounted).
 
 A task is one note, `<task>.md`, whose dates are in its frontmatter
 (`created`). `/handoff` moves the previous one to `_history/<task>/` before
@@ -374,8 +393,8 @@ archive.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `HANDOFF_ROOT` | `root=` in the config file, else `${XDG_DATA_HOME:-~/.local/share}/claude-handoff` | Where handoffs and tips are stored; any directory works. |
-| `HANDOFF_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/claude-handoff/config` | The config file (`root=`). |
-| `HANDOFF_STATE` | `${XDG_STATE_HOME:-~/.local/state}/claude-handoff` | Per-machine files: the tips log, the dashboard's PID file and log. |
+| `HANDOFF_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/claude-handoff/config` | The config file (`root=`, `path.<project>=`). |
+| `HANDOFF_STATE` | `${XDG_STATE_HOME:-~/.local/state}/claude-handoff` | Per-machine files: project paths, the tips log, the dashboard's PID file and log. |
 | `HANDOFF_KEEP` | `10` | Handoffs kept per task, the task's file included (a positive integer; anything else means 10). Older ones are deleted from `_history/` when you save. |
 | `HANDOFF_PORT` | `8765` | Default port of the `handoffs` dashboard. |
 | `TIPS_LOG_MAX` | `262144` | Size in bytes after which the tips log moves to `tips.1.jsonl`. |
@@ -394,6 +413,14 @@ root=~/Notes/Handoffs
 
 `HANDOFF_ROOT` overrides the file. The dashboard reads the file when it
 starts: after changing `root=`, restart it (`handoffs service restart`).
+
+`path.<project>=DIR` sets the project's path on this machine by hand, over
+the recorded one (see [Several machines](#several-machines)); the dashboard
+picks it up on the next reload:
+
+```text
+path.app=~/work/app
+```
 
 Set them in your shell profile or in the `env` block of
 `~/.claude/settings.json`.

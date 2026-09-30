@@ -357,6 +357,35 @@ OUT=$(env -u HANDOFF_ROOT XDG_CONFIG_HOME="$TMP/cfgh" HOME="$TMP/h" python3 -c \
   'import sys; ns = {"__name__": "x"}; exec(open(sys.argv[1]).read(), ns); print(ns["handoff_root"]())' "$(dirname "$SCRIPT")/../../bin/handoffs" 2>&1)
 has "$TMP/h/from-config" "the dashboard reads root= from the config file"
 
+# --- this machine's project paths ------------------------------------------
+PS="$HANDOFF_STATE/paths" TAB=$'\t'
+L1="$TMP/pa/linkme" L2="$TMP/pb/linkme"; mkdir -p "$L1" "$L2"
+assert "earlier projects are recorded" grep -qx "plain${TAB}$P" "$PS"
+save "$L1" lt "Link" >/dev/null
+assert "new records the project path" grep -qx "linkme${TAB}$L1" "$PS"
+run "$L2" show @lt
+has "path: conflict @linkme is at $L1 on this machine, not $L2" "show reports another existing path of the key"
+assert "a conflict keeps the recorded path" grep -qx "linkme${TAB}$L1" "$PS"
+run "$L2" link
+has "linked: @linkme -> $L2"
+assert "link replaces the key's line only" [ "$(grep -c "^linkme$TAB" "$PS")" = 1 ] && grep -qx "linkme${TAB}$L2" "$PS" && grep -qx "plain${TAB}$P" "$PS"
+run "$L2" show @lt
+lacks "path: conflict" "no conflict once linked"
+rm -r "$TMP/pb"
+run "$L1" show @lt
+lacks "path: conflict" "a recorded path that is gone is no conflict"
+assert "a recorded path that is gone is replaced" grep -qx "linkme${TAB}$L1" "$PS"
+mkdir -p "$L2" "$XDG_CONFIG_HOME/claude-handoff"
+printf 'path.linkme = ~/elsewhere\n' >"$XDG_CONFIG_HOME/claude-handoff/config"
+run "$L2" show @lt
+lacks "path: conflict" "path.<key> in the config file: nothing to record"
+assert "path.<key> in the config file: the state is kept" grep -qx "linkme${TAB}$L1" "$PS"
+run "$L2" link
+has "note: path.linkme in" "link notes the config override"
+rm -f "$XDG_CONFIG_HOME/claude-handoff/config"
+mkdir -p "$TMP/pk/c~d" && run "$TMP/pk/c~d" new kt
+assert "a key with ~ is recorded" grep -qx "c-d${TAB}$TMP/pk/c~d" "$PS"
+
 # A moved project keeps its handoffs; relative paths follow it.
 MV1="$TMP/old/mover"; mkdir -p "$MV1/sub"; cd "$MV1/sub" || exit 1
 MF=$(save "$MV1" mtask "Mover")
@@ -725,7 +754,7 @@ EOF
   } >"$D/_tips/log.jsonl"
   printf '{"ts":"2026-08-01T10:00:00+0300","event":"prompt-hook","project":"home~other","id":"tip","hits":1}\n' >"$D/_tips/log.1.jsonl"
 
-  OUT=$(HANDOFF_ROOT="$D" python3 "$DASH" --json 2>&1) || fail "handoffs --json failed"
+  OUT=$(HANDOFF_ROOT="$D" HANDOFF_STATE="$TMP/dstate0" python3 "$DASH" --json 2>&1) || fail "handoffs --json failed"
   # jcheck EXPR MSG: EXPR is Python over d (the JSON) and t (task by name).
   jcheck() {
     if python3 -c 'import json,sys; d=json.loads(sys.argv[1]); t={x["task"]:x for x in d["tasks"]}; sys.exit(0 if eval(sys.argv[2]) else 1)' "$OUT" "$1" 2>/dev/null
@@ -763,6 +792,24 @@ EOF
   OUT=$(HANDOFF_ROOT="$TMP/none" python3 "$DASH" --json 2>&1)
   jcheck 'd["tasks"] == []' "missing root gives no tasks"
   jcheck 'd["home"] and d["root"].endswith("none")' "reports home and root"
+
+  # This machine's paths: path.<key> in the config, else the state, if it
+  # exists; else the handoffs' paths.
+  DS="$TMP/dstate" DC="$TMP/dconf"; mkdir -p "$DS" "$DC" "$TMP/mine" "$TMP/over"
+  printf 'home~app\t%s\nother\t/no/such/dir\nq1~api\t%s\n' "$TMP/mine" "$TMP/mine" >"$DS/paths"
+  dash() { HANDOFF_ROOT="$D" HANDOFF_STATE="$DS" HANDOFF_CONFIG="$DC/config" python3 "$DASH" "$@" 2>&1; }
+  OUT=$(dash --json)
+  jcheck 't["alpha"]["project"] == "'"$TMP/mine"'" and t["old"]["project"] == "'"$TMP/mine"'" and t["alpha"]["project_exists"]' "this machine's path wins over the handoffs'"
+  jcheck 't["bare"]["project"] == "other"' "a recorded path that is gone is skipped"
+  printf 'root = %s\npath.home~app = %s\npath.q1~api = /no/such\n' "$D" "$TMP/over" >"$DC/config"
+  OUT=$(dash --json)
+  jcheck 't["alpha"]["project"] == "'"$TMP/over"'" and t["t"]["project"] == "'"$TMP/mine"'"' "path.<key> in the config wins if it exists"
+  OUT=$(dash paths)
+  has "home~app${TAB}$TMP/over  (config)" "paths lists the config override"
+  has "other${TAB}/no/such/dir  (missing)" "paths marks a missing path"
+  OUT=$(dash paths --prune)
+  has "forgot: other" "prune forgets the missing recorded paths"
+  assert "prune keeps the rest" [ "$(cat "$DS/paths")" = "home~app${TAB}$TMP/mine"$'\n'"q1~api${TAB}$TMP/mine" ]
 
   # Git projects: the project dir is the repo (reported) vs. a nested repo (not).
   G="$TMP/gitproj"; mkdir -p "$G/nested"

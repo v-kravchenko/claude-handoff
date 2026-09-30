@@ -46,6 +46,9 @@ Run each `handoff.sh` command in its own Bash call, exactly as written: no
      of State`), if any;
    - current state (3–5 bullets);
    - staleness warnings, if any;
+   - with `path: conflict` in the output: the project already has another
+     path on this machine; ask whether this directory replaces it (if yes,
+     run `handoff.sh link`);
    - the proposed first step from Next steps (if nothing is left, suggest
      `/handoff @task done`). If a fork is `done` and the handoff does not
      account for its result yet, the first step is to take that result into

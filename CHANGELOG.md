@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-09-30
+
+### Added
+
+- Per-machine project paths: `/handoff` and `/pickup` record the project
+  directory in `$HANDOFF_STATE/paths`, and the dashboard uses it for the
+  resume command's `cd`, so a project at another path on each machine is no
+  longer *path missing* there. `path.<project>=` in the config file
+  overrides it. Another existing path of the same project is kept and
+  reported (`path: conflict`); `handoff.sh link` replaces it.
+- `handoffs paths [--prune]` lists this machine's paths and forgets the
+  recorded ones that no longer exist.
+
 ## [1.5.2] - 2026-09-29
 
 ### Changed
@@ -402,6 +415,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.5.3]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/v-kravchenko/claude-handoff/compare/v1.4.3...v1.5.0
