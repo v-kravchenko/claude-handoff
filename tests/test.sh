@@ -873,6 +873,7 @@ s, b = get("/api/search?q=x", h); print("shortsearch", s, json.loads(b))
 s, b = get("/api/stale?" + A, h); print("nostale", s)
 token = re.search(r'const TOKEN = "([^"]*)"', get("/", h)[1]).group(1)
 print("token", len(token) > 10)
+print("noauth", json.loads(get("/api/tasks", h)[1])["auth"], get("/login", h)[0])
 def post(path, body, hdrs):
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     c.request("POST", path, body=json.dumps(body), headers=dict({"Host": h, "Content-Type": "application/json"}, **hdrs))
@@ -932,6 +933,7 @@ EOF
   has "shortsearch 200 []" "one-letter search returns nothing"
   has "nostale 404" "the dashboard has no staleness API"
   has "token True" "the page carries a write token"
+  has "noauth False 303" "auth off: no login page"
   has "notoken 403" "POST without the token is rejected"
   has "badorigin 403" "POST from a foreign Origin is rejected"
   has "done 200" "done archives the task"
@@ -965,34 +967,149 @@ EOF
   assert "done/restore round trip keeps both versions" [ "$(find "$D/home~app/_history/beta" -name '*.md' | wc -l | tr -d ' ')" -eq 1 ]
   assert "restore removes the archive entry" [ ! -e "$D/home~app/_archive/alpha.md" ]
 
-  # --read-only: no token, POST refused.
-  HANDOFF_ROOT="$D" python3 "$DASH" --no-open --read-only --host 0.0.0.0 --port "$PORT" >"$TMP/dash.log" 2>&1 &
-  DPID=$!
-  OUT=$(python3 - "$PORT" <<'EOF'
-import http.client, json, sys, time
-port = int(sys.argv[1]); h = "127.0.0.1:%d" % port
-def req(method, path, body=None, hdrs=None):
+  # auth: off (no config) is loopback only; on is a password login.
+  AC="$TMP/acfg"; AS="$TMP/astate"
+  OUT=$(HANDOFF_CONFIG="$AC/config" HANDOFF_ROOT="$D" python3 "$DASH" --no-open --host 0.0.0.0 --port "$PORT" 2>&1); rc=$?
+  assert "auth off on 0.0.0.0 exits with 2" [ "$rc" -eq 2 ]
+  has "needs auth = on (handoffs auth on)" "auth off on 0.0.0.0 says to turn auth on"
+  OUT=$(HANDOFF_CONFIG="$AC/config" python3 "$DASH" --no-open --read-only --json 2>&1); rc=$?
+  assert "--read-only is gone" [ "$rc" -eq 2 ]
+  mkdir -p "$AC"; printf 'public_url = https://h.example.com/\n' >"$AC/config"
+  OUT=$(HANDOFF_CONFIG="$AC/config" HANDOFF_ROOT="$D" python3 "$DASH" --no-open --port "$PORT" 2>&1); rc=$?
+  assert "public_url without auth exits with 2" [ "$rc" -eq 2 ]
+  has "https://h.example.com needs auth = on" "public_url without auth names the URL"
+  ah() { OUT=$(HANDOFF_CONFIG="$AC/config" HANDOFF_STATE="$AS" python3 "$DASH" auth "$@" 2>&1); }
+  ah on </dev/null; rc=$?
+  assert "auth on without a password exits with 2" [ "$rc" -eq 2 ]
+  has "handoffs auth password" "auth on without a password says how to set one"
+  ah password --stdin <<<"short"; rc=$?
+  assert "a short password is refused" [ "$rc" -ne 0 ] && [ ! -e "$AC/password" ]
+  ah password --stdin <<<"correct horse battery staple"
+  assert "auth password stores a 0600 scrypt hash" grep -qE '^scrypt[$]17[$]8[$]1[$]' "$AC/password"
+  assert "the password file is private" [ "$(python3 -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$AC/password")" = 0o600 ]
+  lacks "correct horse" "the password is not printed"
+  ah password --generate
+  has "password: " "--generate prints the new password"
+  ah on
+  has "auth = on in $AC/config" "auth on sets auth = on"
+  assert "auth on keeps the other config lines" grep -qx 'public_url = https://h.example.com/' "$AC/config"
+  # A cheap hash (N=2^4) keeps the login tests fast; the real one takes ~0.5 s.
+  # shellcheck disable=SC2016  # python code, not shell
+  python3 -c 'import hashlib,base64,sys
+b=lambda x: base64.urlsafe_b64encode(x).decode().rstrip("=")
+h=hashlib.scrypt(sys.argv[1].encode(), salt=b"0123456789abcdef", n=16, r=8, p=1, dklen=32)
+print("scrypt$4$8$1$%s$%s" % (b(b"0123456789abcdef"), b(h)))' "right password here" >"$AC/password"
+  ah status
+  has "auth: on" "auth status shows auth"
+  has "password: set (scrypt)" "auth status shows the hash kind"
+  has "public_url: https://h.example.com" "auth status shows public_url"
+  adash() {
+    HANDOFF_CONFIG="$AC/config" HANDOFF_STATE="$AS" HANDOFF_ROOT="$D" python3 "$DASH" --no-open --host 0.0.0.0 --port "$PORT" >"$TMP/adash.log" 2>&1 &
+    DPID=$!
+  }
+  adash
+  OUT=$(python3 - "$PORT" "$TMP/cookie" <<'EOF'
+import http.client, json, re, sys, time, urllib.parse
+port = int(sys.argv[1]); h = "127.0.0.1:%d" % port; pub = "h.example.com"
+def req(method, path, body=None, hdrs=None, host=h):
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    c.request(method, path, body=body, headers=dict({"Host": h}, **(hdrs or {})))
-    r = c.getresponse(); return r.status, r.read().decode()
+    c.request(method, path, body=body, headers=dict({"Host": host}, **(hdrs or {})))
+    r = c.getresponse(); return r.status, r.read().decode(), r
 for _ in range(50):
     try:
-        req("GET", "/"); break
+        req("GET", "/login"); break
     except OSError:
         time.sleep(0.1)
-print("ro-writable", json.loads(req("GET", "/api/tasks")[1])["writable"])
-print("ro-token", 'const TOKEN = ""' in req("GET", "/")[1])
-print("ro-post", req("POST", "/api/done", '{"slug":"home~app","task":"alpha"}', {"X-Handoffs-Token": ""})[0])
-print("ro-ip", req("GET", "/api/tasks", hdrs={"Host": "192.168.1.5:%d" % port})[0])
-print("ro-name", req("GET", "/api/tasks", hdrs={"Host": "evil.example:%d" % port})[0])
+form = {"Content-Type": "application/x-www-form-urlencoded"}
+login = lambda pw, host=h, o=None: req("POST", "/login", urllib.parse.urlencode({"password": pw}),
+                                      dict(form, **({"Origin": o} if o else {})), host)
+s, b, r = req("GET", "/"); print("a-root", s, r.getheader("Location"))
+print("a-api", req("GET", "/api/tasks")[0], req("POST", "/api/done", "{}")[0])
+s, b, r = req("GET", "/login"); print("a-login", s, 'type="password"' in b, "form-action 'self'" in r.getheader("Content-Security-Policy"),
+      r.getheader("Referrer-Policy"))
+s, b, r = login("wrong password"); print("a-wrong", s, "Wrong password" in b)
+print("a-badorigin", login("right password here", o="https://evil.example")[0])
+s, b, r = login("right password here", o="http://" + h)
+ck = r.getheader("Set-Cookie"); print("a-ok", s, r.getheader("Location"), ck.startswith("handoffs="), "Secure" not in ck,
+                                       "HttpOnly" in ck, "SameSite=Strict" in ck, "Path=/" in ck)
+sid = ck.split(";")[0]; C = {"Cookie": sid}
+s, b, r = req("GET", "/", hdrs=C); tok = re.search(r'const TOKEN = "([^"]*)"', b).group(1); print("a-page", s, len(tok) > 10)
+print("a-data", json.loads(req("GET", "/api/tasks", hdrs=C)[1])["auth"])
+print("a-redir", req("GET", "/login", hdrs=C)[0])
+print("a-notoken", req("POST", "/api/done", '{"slug":"home~app","task":"beta"}', C)[0])
+print("a-post", req("POST", "/api/done", '{"slug":"home~app","task":"beta"}', dict(C, **{"X-Handoffs-Token": tok}))[0],
+      req("POST", "/api/restore", '{"slug":"home~app","task":"beta"}', dict(C, **{"X-Handoffs-Token": tok}))[0])
+s, b, r = login("right password here", host=pub, o="https://" + pub)
+pck = r.getheader("Set-Cookie"); print("a-public", s, pck.startswith("__Host-handoffs="), "; Secure" in pck)
+P = {"Cookie": pck.split(";")[0]}
+ptok = re.search(r'const TOKEN = "([^"]*)"', req("GET", "/", hdrs=P, host=pub)[1]).group(1)
+print("a-pubpost", req("POST", "/api/done", '{"slug":"home~app","task":"beta"}',
+      dict(P, **{"X-Handoffs-Token": ptok, "Origin": "https://" + pub}), pub)[0], ptok != tok,
+      req("POST", "/api/restore", '{"slug":"home~app","task":"beta"}', dict(P, **{"X-Handoffs-Token": tok}), pub)[0])
+req("POST", "/api/restore", '{"slug":"home~app","task":"beta"}', dict(P, **{"X-Handoffs-Token": ptok}), pub)
+print("a-plaincookie", req("GET", "/api/tasks", hdrs={"Cookie": "handoffs=" + P["Cookie"].split("=", 1)[1]}, host=pub)[0])
+print("a-ip", req("GET", "/api/tasks", hdrs=C, host="192.168.1.5:%d" % port)[0])
+print("a-name", req("GET", "/api/tasks", hdrs=C, host="evil.example:%d" % port)[0])
+s, b, r = req("POST", "/api/logout", "{}", dict(P, **{"X-Handoffs-Token": ptok}), pub)
+print("a-logout", s, "Max-Age=0" in r.getheader("Set-Cookie"), req("GET", "/api/tasks", hdrs=P, host=pub)[0],
+      req("GET", "/api/tasks", hdrs=C)[0])
+codes = [login("wrong", o="http://" + h)[0] for _ in range(5)]
+s, b, r = login("right password here")
+print("a-lock", codes, s, r.getheader("Retry-After"), "Wrong password" in b)
+open(sys.argv[2], "w").write(sid)
 EOF
 )
   kill "$DPID" 2>/dev/null; wait "$DPID" 2>/dev/null
-  has "ro-writable False" "--read-only reports writable: false"
-  has "ro-token True" "--read-only page has no token"
-  has "ro-post 403" "--read-only refuses POST"
-  has "ro-ip 200" "on 0.0.0.0 a LAN IP Host is allowed"
-  has "ro-name 403" "on 0.0.0.0 a host name is still rejected"
+  has "a-root 303 login" "auth: GET / without a session goes to the login page"
+  has "a-api 401 401" "auth: the API without a session gives 401"
+  has "a-login 200 True True same-origin" "auth: the login page has a form it may post, with a real Origin"
+  has "a-wrong 401 True" "auth: a wrong password gives 401"
+  has "a-badorigin 403" "auth: a login from a foreign Origin is rejected"
+  has "a-ok 303 ./ True True True True True" "auth: a login sets an HttpOnly SameSite=Strict cookie (no Secure on HTTP)"
+  has "a-page 200 True" "auth: the page carries the session's token"
+  has "a-data True" "auth: /api/tasks reports auth"
+  has "a-redir 303" "auth: /login with a session goes to the dashboard"
+  has "a-notoken 403" "auth: POST without the token is rejected"
+  has "a-post 200 200" "auth: a signed-in session can edit"
+  has "a-public 303 True True" "auth: behind public_url the cookie is __Host- and Secure"
+  has "a-pubpost 200 True 403" "auth: public_url is a valid Origin; tokens are per session"
+  has "a-plaincookie 401" "auth: behind public_url only the __Host- cookie counts"
+  has "a-ip 200" "on 0.0.0.0 a LAN IP Host is allowed"
+  has "a-name 403" "on 0.0.0.0 a host name is still rejected"
+  has "a-logout 200 True 401 200" "auth: sign out ends only that session"
+  has "a-lock [401, 401, 401, 401, 401] 429 30 True" "auth: 5 failures lock logins, with the same message"
+  OUT=$(cat "$TMP/adash.log")
+  has "handoffs: failed login from 127.0.0.1" "auth: failed logins are logged"
+  assert "sessions keep only hashes" [ -s "$AS/sessions" ] && ! grep -qF "$(cut -d= -f2 "$TMP/cookie")" "$AS/sessions"
+  # A restart keeps the session; logout-all ends it.
+  adash
+  OUT=$(python3 - "$PORT" "$(cat "$TMP/cookie")" <<'EOF'
+import http.client, sys, time
+port = int(sys.argv[1])
+def get(ck):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.request("GET", "/api/tasks", headers={"Host": "127.0.0.1:%d" % port, "Cookie": ck})
+    return c.getresponse().status
+for _ in range(50):
+    try:
+        get(""); break
+    except OSError:
+        time.sleep(0.1)
+print("r-kept", get(sys.argv[2]))
+EOF
+)
+  has "r-kept 200" "auth: a restart keeps the session"
+  ah logout-all
+  OUT=$(python3 -c 'import http.client,sys; c=http.client.HTTPConnection("127.0.0.1",int(sys.argv[1]),timeout=5); c.request("GET","/api/tasks",headers={"Cookie":sys.argv[2]}); print("r-gone",c.getresponse().status)' "$PORT" "$(cat "$TMP/cookie")")
+  kill "$DPID" 2>/dev/null; wait "$DPID" 2>/dev/null
+  has "r-gone 401" "auth logout-all ends the sessions of a running dashboard"
+  ah off
+  has "public_url is set, so the dashboard will not start without auth" "auth off warns about public_url"
+  assert "auth off sets auth = off" grep -qx 'auth = off' "$AC/config"
+  printf 'auth = maybe\n' >"$AC/config"
+  OUT=$(HANDOFF_CONFIG="$AC/config" python3 "$DASH" --no-open --port "$PORT" 2>&1); rc=$?
+  assert "a bad auth value exits with 2" [ "$rc" -eq 2 ]
+  has "must be on or off" "a bad auth value is named"
   OUT=$(HANDOFF_PORT=abc python3 "$DASH" --json 2>&1); rc=$?
   assert "a bad HANDOFF_PORT exits with 2" [ "$rc" -eq 2 ]
   has "HANDOFF_PORT must be a port number" "a bad HANDOFF_PORT gives a clear error"
@@ -1018,13 +1135,16 @@ EOF
 
   # handoffs service: only --dry-run and the not-installed paths (no systemd/launchd in CI).
   OUT=$(HANDOFF_SERVICE_KIND=systemd XDG_CONFIG_HOME="$TMP/xdg" HANDOFF_STATE="$TMP/my state" \
-    python3 "$DASH" service install --port 8801 --read-only --dry-run 2>&1)
+    python3 "$DASH" service install --port 8801 --dry-run 2>&1)
   has "# $TMP/xdg/systemd/user/handoffs.service" "service unit goes to the systemd user dir"
-  has "--no-open --port 8801 --read-only" "service runs the dashboard with the given options"
+  has "--no-open --port 8801" "service runs the dashboard with the given options"
   has "Environment=\"HANDOFF_STATE=$TMP/my state\"" "service keeps HANDOFF_STATE, quoted"
   lacks "HANDOFF_ROOT" "service does not pin HANDOFF_ROOT: it reads the config file"
   has "systemctl --user enable --now handoffs.service" "service install enables the unit"
   assert "--dry-run writes nothing" [ ! -e "$TMP/xdg/systemd" ]
+  OUT=$(HANDOFF_SERVICE_KIND=systemd XDG_CONFIG_HOME="$TMP/xdg" python3 "$DASH" service install --host 0.0.0.0 --dry-run 2>&1); rc=$?
+  assert "service install on 0.0.0.0 without auth exits with 2" [ "$rc" -eq 2 ]
+  has "needs auth = on" "service install on 0.0.0.0 without auth says why"
   OUT=$(HANDOFF_SERVICE_KIND=launchd HOME="$TMP/mac" python3 "$DASH" service install --dry-run 2>&1)
   has "<key>RunAtLoad</key><true/>" "launchd plist starts at login"
   has "launchctl bootstrap gui/" "launchd install bootstraps the agent"
@@ -1050,6 +1170,25 @@ EOF
   OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/bin" "$INST" 2>&1 </dev/null)
   has "is not ours; skipped" "install warns about a foreign handoffs command"
   assert "install keeps a foreign handoffs command" grep -qx '#!/bin/sh' "$TMP/bin/handoffs"
+
+  # install.sh --dashboard-auth / --no-dashboard-auth; no flag and no terminal: kept.
+  XC="$TMP/xdg-config/claude-handoff"
+  ainst() { OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/abin" "$INST" --dashboard-only "$@" 2>&1 </dev/null); }
+  ainst --dashboard-auth
+  has "the dashboard login is off" "--dashboard-auth without a password and a terminal warns"
+  assert "--dashboard-auth without a password leaves auth off" [ ! -e "$XC/config" ] || ! grep -q '^auth = on' "$XC/config"
+  mkdir -p "$XC"; cp "$AC/password" "$XC/password"
+  ainst --dashboard-auth
+  assert "--dashboard-auth turns auth on" grep -qx 'auth = on' "$XC/config"
+  ainst
+  assert "install without the flag keeps auth on" grep -qx 'auth = on' "$XC/config"
+  ainst --no-dashboard-auth
+  assert "--no-dashboard-auth turns auth off" grep -qx 'auth = off' "$XC/config"
+  OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/abin" "$INST" --no-dashboard --dashboard-auth 2>&1 </dev/null); rc=$?
+  assert "--dashboard-auth with --no-dashboard exits with 2" [ "$rc" -eq 2 ]
+  : >"$HANDOFF_STATE/sessions"
+  OUT=$(CLAUDE_CONFIG_DIR="$TMP/cfg" HANDOFF_BIN_DIR="$TMP/abin" "$INST" --uninstall 2>&1)
+  assert "uninstall keeps the password, drops the sessions" [ -f "$XC/password" ] && [ ! -e "$HANDOFF_STATE/sessions" ]
 
   # Tips: skill, CLAUDE.md block and hook; foreign content is kept.
   IC="$TMP/icfg"; mkdir -p "$IC"

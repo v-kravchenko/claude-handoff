@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Local web dashboard for claude-handoff tasks (part of claude-handoff).
 
-Usage: handoffs [--port N] [--host ADDR] [--no-open] [--read-only] [--background | --stop]
+Usage: handoffs [--port N] [--host ADDR] [--no-open] [--background | --stop]
                 [--json] [--version]
        handoffs service install|uninstall|restart|status [--port N] [--dry-run]
+       handoffs auth status|on|off|password [--generate|--stdin]|logout-all
        handoffs paths [--prune]
 
 Serves a page with every task of every project under the handoff
@@ -15,11 +16,17 @@ $HANDOFF_STATE (else $XDG_STATE_HOME/claude-handoff, else
 file overrides one): a project's path is that one if it exists, else the
 newest `project:` of its handoffs that exists here.
 Data is read from disk on every request. Python 3.8+, standard library only.
+Whoever can open the dashboard can edit it: with `auth = off` (the default)
+it listens on loopback only; `handoffs auth on` adds a password login, for a
+dashboard on another address or behind an HTTPS proxy (`public_url =`).
 """
 
 import argparse
+import base64
 import datetime
 import difflib
+import getpass
+import hashlib
 import hmac
 import http.server
 import ipaddress
@@ -34,11 +41,12 @@ import socket
 import socketserver
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import webbrowser
 
-VERSION = "1.5.4"
+VERSION = "1.5.5"
 ARCHIVE = "_archive"
 HISTORY = "_history"  # older handoffs: <slug>/_history/<task>/<stamp>.md
 TIPS = "_tips"  # tips store (skills/handoff/tips.sh), not a project
@@ -636,16 +644,332 @@ def delete_tip(root, slug, tid):
     return None
 
 
+# --- auth ---------------------------------------------------------------------
+# `auth = on` in the config file: a password login (hash in PASSWORD next to
+# the config file), sessions in $HANDOFF_STATE/sessions (only SHA-256 of the
+# IDs), a per-session CSRF token. `auth = off`: loopback only, no login.
+
+PASSWORD = "password"
+SESSIONS = "sessions"
+PW_MIN, PW_MAX = 6, 1024
+SCRYPT = (17, 8, 1)  # log2 N, r, p: 128 MiB, ~0.5 s on a phone
+PBKDF2_ITERS = 600000  # when hashlib has no scrypt (Python built without OpenSSL 1.1)
+LOCK_AFTER, LOCK_FIRST, LOCK_MAX = 5, 30, 900  # failures, then 30 s doubling to 15 min
+DURATION = re.compile(r"^(\d+)\s*([smhd]?)$")
+
+
+def password_path():
+    return os.path.join(os.path.dirname(config_path()), PASSWORD)
+
+
+def b64(b):
+    return base64.urlsafe_b64encode(b).decode().rstrip("=")
+
+
+def unb64(s):
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def scrypt_maxmem(n, r):
+    return 2 * 128 * r * (1 << n) + (1 << 20)  # OpenSSL needs a bit more than 128*r*N
+
+
+def hash_password(pw):
+    salt, data = secrets.token_bytes(16), pw.encode("utf-8")
+    n, r, p = SCRYPT
+    try:
+        h = hashlib.scrypt(data, salt=salt, n=1 << n, r=r, p=p, maxmem=scrypt_maxmem(n, r), dklen=32)
+        return "scrypt$%d$%d$%d$%s$%s" % (n, r, p, b64(salt), b64(h))
+    except (AttributeError, ValueError, MemoryError):
+        h = hashlib.pbkdf2_hmac("sha256", data, salt, PBKDF2_ITERS)
+        return "pbkdf2_sha256$%d$%s$%s" % (PBKDF2_ITERS, b64(salt), b64(h))
+
+
+def check_password(pw, stored):
+    """True if pw matches a hash from hash_password; a bad hash is False."""
+    data = pw.encode("utf-8")
+    try:
+        kind, *f = stored.split("$")
+        if kind == "scrypt":
+            n, r, p, salt, want = int(f[0]), int(f[1]), int(f[2]), unb64(f[3]), unb64(f[4])
+            got = hashlib.scrypt(data, salt=salt, n=1 << n, r=r, p=p, maxmem=scrypt_maxmem(n, r), dklen=len(want))
+        elif kind == "pbkdf2_sha256":
+            salt, want = unb64(f[1]), unb64(f[2])
+            got = hashlib.pbkdf2_hmac("sha256", data, salt, int(f[0]), len(want))
+        else:
+            return False
+    except (ValueError, IndexError, AttributeError, MemoryError):
+        return False
+    return hmac.compare_digest(got, want)
+
+
+def read_password():
+    """The stored hash, or ""."""
+    try:
+        with open(password_path(), encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def write_private(path, text):
+    """Atomically writes a 0600 file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
+def duration(value, default):
+    m = DURATION.match((value or "").strip().lower())
+    if not m:
+        return default
+    return int(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def auth_config():
+    """(auth, public_url, idle, max) from the config file; auth is "on",
+    "off" or the bad value, public_url is "" or its origin."""
+    v = config_values()
+    auth = (v.get("auth") or "off").lower()
+    public = v.get("public_url", "").rstrip("/")
+    return auth, public, duration(v.get("auth.idle"), 7 * 86400), duration(v.get("auth.max"), 30 * 86400)
+
+
+def public_origin(url):
+    """scheme://host[:port] of public_url, lowercased; None if it is not one."""
+    u = urllib.parse.urlsplit(url)
+    if u.scheme not in ("http", "https") or not u.hostname or u.path not in ("", "/") or u.query or u.username:
+        return None
+    return "%s://%s" % (u.scheme, u.netloc.lower())
+
+
+def pw_tag(stored):
+    """Sessions belong to one password: a new password logs everyone out."""
+    return hashlib.sha256(stored.encode("utf-8")).hexdigest()[:16]
+
+
+class Sessions:
+    """Sessions on disk (so a restart keeps them): `sha256(id) created last
+    tag` lines. Read on every check, so `handoffs auth logout-all` works on a
+    running dashboard."""
+
+    lock = threading.Lock()
+    TOUCH = 60  # seconds between writes of the last-seen time
+
+    def __init__(self, idle, max_age):
+        self.idle, self.max_age = idle, max_age
+
+    @staticmethod
+    def path():
+        return os.path.join(state_dir(), SESSIONS)
+
+    def _read(self, now, tag):
+        live = {}
+        try:
+            with open(self.path(), encoding="utf-8") as fh:
+                for line in fh:
+                    f = line.split()
+                    try:
+                        key, created, last, t = f[0], int(f[1]), int(f[2]), f[3]
+                    except (IndexError, ValueError):
+                        continue
+                    if t == tag and now - last < self.idle and now - created < self.max_age:
+                        live[key] = [created, last, t]
+        except OSError:
+            pass
+        return live
+
+    def _write(self, live):
+        write_private(self.path(), "".join("%s %d %d %s\n" % (k, c, lst, t) for k, (c, lst, t) in live.items()))
+
+    @staticmethod
+    def key(sid):
+        return hashlib.sha256(sid.encode("utf-8")).hexdigest()
+
+    def create(self, tag):
+        sid = secrets.token_urlsafe(32)
+        now = int(time.time())
+        with self.lock:
+            live = self._read(now, tag)
+            live[self.key(sid)] = [now, now, tag]
+            self._write(live)
+        return sid
+
+    def valid(self, sid, tag):
+        if not sid or not tag:
+            return False
+        now = int(time.time())
+        with self.lock:
+            live = self._read(now, tag)
+            s = live.get(self.key(sid))
+            if not s:
+                return False
+            if now - s[1] >= self.TOUCH:
+                s[1] = now
+                self._write(live)
+        return True
+
+    def drop(self, sid, tag):
+        with self.lock:
+            live = self._read(int(time.time()), tag)
+            if live.pop(self.key(sid), None):
+                self._write(live)
+
+    def count(self, tag):
+        return len(self._read(int(time.time()), tag))
+
+
+def csrf_token(sid):
+    return hmac.new(sid.encode("utf-8"), b"handoffs-csrf", hashlib.sha256).hexdigest()[:32]
+
+
+class Throttle:
+    """One failure counter for the whole dashboard: behind a proxy every
+    client is 127.0.0.1. After LOCK_AFTER failures logins are refused for
+    LOCK_FIRST seconds, doubling with each failure after that, up to LOCK_MAX."""
+
+    def __init__(self):
+        self.lock = threading.Lock()  # also runs the password checks one at a time (128 MiB each)
+        self.fails, self.until = 0, 0.0
+
+    def wait(self):
+        """Seconds until a login may be tried, or 0."""
+        return max(0, int(self.until - time.time() + 0.999))
+
+    def failed(self):
+        self.fails += 1
+        if self.fails >= LOCK_AFTER:
+            self.until = time.time() + min(LOCK_MAX, LOCK_FIRST * 2 ** (self.fails - LOCK_AFTER))
+
+    def ok(self):
+        self.fails, self.until = 0, 0.0
+
+
+def set_config(key, value):
+    """Sets `key = value` in the config file, keeping everything else."""
+    path = config_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        lines = []
+    out, done = [], False
+    for line in lines:
+        if line.partition("=")[1] and line.partition("=")[0].strip() == key:
+            if not done:
+                out.append("%s = %s" % (key, value))
+                done = True
+            continue
+        out.append(line)
+    if not done:
+        out.append("%s = %s" % (key, value))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(out) + "\n")
+
+
+def new_password(args):
+    """The password from --generate, --stdin or the terminal; exits on errors."""
+    if args.generate:
+        pw = secrets.token_urlsafe(18)
+        print("password: " + pw)
+        print("(shown once; keep it in a password manager)")
+        return pw
+    if args.stdin or not sys.stdin.isatty():
+        pw = sys.stdin.readline().rstrip("\r\n")
+    else:
+        pw = getpass.getpass("New dashboard password: ")
+        if pw != getpass.getpass("Repeat it: "):
+            raise SystemExit("error: the passwords differ")
+    if not PW_MIN <= len(pw) <= PW_MAX:
+        raise SystemExit("error: the password must be %d to %d characters (or use --generate)" % (PW_MIN, PW_MAX))
+    return pw
+
+
+def restart_service():
+    """Restarts an installed `handoffs service`, so a config change applies."""
+    kind = os.environ.get("HANDOFF_SERVICE_KIND") or service_kind()
+    if kind in ("systemd", "launchd") and os.path.exists(service_path(kind)):
+        if service_main(["restart"]) == 0:
+            print("restarted the handoffs service")
+    elif read_pidfile(os.path.join(state_dir(), PIDFILE))[0]:
+        print("note: restart the background dashboard to apply: handoffs --stop; handoffs --background")
+
+
+def auth_main(argv):
+    ap = argparse.ArgumentParser(prog="handoffs auth", description="Password login for the dashboard.")
+    ap.add_argument("action", choices=["status", "on", "off", "password", "logout-all"])
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--generate", action="store_true", help="password: make a random one and print it")
+    g.add_argument("--stdin", action="store_true", help="password: read it from the first line of stdin")
+    args = ap.parse_args(argv)
+    auth, public, idle, max_age = auth_config()
+    stored = read_password()
+    if args.action == "status":
+        print("auth: %s" % auth)
+        print("password: %s" % ("set (%s)" % stored.split("$", 1)[0] if stored else "not set"))
+        print("public_url: %s" % (public or "-"))
+        print("sessions: %d (idle %ds, max %ds)" % (Sessions(idle, max_age).count(pw_tag(stored)) if stored else 0,
+                                                   idle, max_age))
+        return 0
+    if args.action == "password" or (args.action == "on" and not stored):
+        if args.action == "on" and not (args.generate or args.stdin or sys.stdin.isatty()):
+            print("error: no password yet: handoffs auth password [--generate|--stdin]", file=sys.stderr)
+            return 2
+        write_private(password_path(), hash_password(new_password(args)) + "\n")
+        write_private(Sessions.path(), "")
+        print("wrote %s (all sessions signed out)" % password_path())
+    if args.action == "logout-all":
+        write_private(Sessions.path(), "")
+        print("signed out all sessions")
+    if args.action in ("on", "off"):
+        set_config("auth", args.action)
+        print("auth = %s in %s" % (args.action, config_path()))
+        if args.action == "off" and public:
+            print("warning: public_url is set, so the dashboard will not start without auth", file=sys.stderr)
+        restart_service()
+    return 0
+
+
+def auth_error(host):
+    """Why the dashboard must not start on host with this config, or ""."""
+    auth, public, _, _ = auth_config()
+    if auth not in ("on", "off"):
+        return "auth in %s must be on or off, got %r" % (config_path(), auth)
+    if public and not public_origin(public):
+        return "public_url in %s must be http(s)://host[:port], got %r" % (config_path(), public)
+    if auth == "on" and not read_password():
+        return "auth = on, but no password is set (handoffs auth password)"
+    if auth == "off" and (host not in LOOPBACK or public):
+        return "the dashboard on %s needs auth = on (handoffs auth on)" % (public or host)
+    return ""
+
+
 # --- server -------------------------------------------------------------------
+
+CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+       "connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+LOGIN_CSP = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+LOGIN_FAILED = "Wrong password, or too many attempts: wait a bit and try again."
+
 
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "handoffs/" + VERSION
     allowed_hosts = LOOPBACK
     any_ip = False  # listening on 0.0.0.0/::: any IP address is a valid Host
-    token = ""  # empty: read-only
+    token = ""  # auth off: the page's CSRF token
+    sessions = None  # auth on: Sessions
+    throttle = None  # auth on: Throttle
+    public = ""  # public_url's origin: a valid Host and Origin (behind a proxy)
+
+    def host(self):
+        return (self.headers.get("Host") or "").strip().lower()
 
     def host_ok(self):
-        host = (self.headers.get("Host") or "").strip().lower()
+        host = self.host()
         if host.startswith("["):
             host = host[1:].split("]", 1)[0]
         elif host.count(":") == 1:
@@ -660,38 +984,113 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return False
         return False
 
-    def send(self, code, ctype, body):
+    def origin_ok(self):
+        origin = (self.headers.get("Origin") or "").lower()
+        return not origin or origin in ("http://" + self.host(), self.public)
+
+    def send(self, code, ctype, body, headers=(), csp=CSP, referrer="no-referrer"):
         data = body.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy",
-                         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                         "connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; "
-                         "frame-ancestors 'none'")
+        self.send_header("Referrer-Policy", referrer)
+        self.send_header("Content-Security-Policy", csp)
+        for k, v in headers:
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
 
-    def send_json(self, obj, code=200):
-        return self.send(code, "application/json; charset=utf-8", json.dumps(obj, ensure_ascii=False))
+    def send_json(self, obj, code=200, headers=()):
+        return self.send(code, "application/json; charset=utf-8", json.dumps(obj, ensure_ascii=False), headers)
 
     def not_found(self):
         return self.send(404, "text/plain; charset=utf-8", "not found\n")
+
+    def redirect(self, where, headers=()):
+        return self.send(303, "text/plain; charset=utf-8", "", [("Location", where)] + list(headers))
+
+    # Behind an HTTPS proxy (public_url): __Host- cookie, Secure. Plain HTTP
+    # (loopback, a LAN address): a plain cookie, which the browser would drop if Secure.
+    def secure(self):
+        return self.public.startswith("https://") and self.public == "https://" + self.host()
+
+    def cookie_name(self):
+        return "__Host-handoffs" if self.secure() else "handoffs"
+
+    def cookie(self, value, max_age):
+        return ("Set-Cookie", "%s=%s; Max-Age=%d; Path=/; HttpOnly; SameSite=Strict%s"
+                % (self.cookie_name(), value, max_age, "; Secure" if self.secure() else ""))
+
+    def session(self):
+        """The valid session ID from the cookie, or ""."""
+        name = self.cookie_name()
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == name and v:
+                stored = read_password()
+                return v if stored and self.sessions.valid(v, pw_tag(stored)) else ""
+        return ""
+
+    def client(self):
+        """The client's IP for the log: behind a local proxy, the last X-Forwarded-For hop."""
+        peer = self.client_address[0]
+        fwd = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+        return fwd if fwd and peer in LOOPBACK | {"::ffff:127.0.0.1"} else peer
+
+    def login_page(self, code=200, msg="", headers=()):
+        page = LOGIN_PAGE.replace("__MSG__", '<p class="err" role="alert">%s</p>' % msg if msg else "")
+        # With no-referrer the browser posts the form with `Origin: null`.
+        return self.send(code, "text/html; charset=utf-8", page, headers, csp=LOGIN_CSP, referrer="same-origin")
+
+    def login(self):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            form = urllib.parse.parse_qs(self.rfile.read(min(n, 8192)).decode("utf-8", "replace"))
+        except ValueError:
+            form = {}
+        pw = (form.get("password") or [""])[0]
+        wait = self.throttle.wait()
+        if not wait:
+            with self.throttle.lock:
+                wait = self.throttle.wait()  # another login may have failed meanwhile
+                if not wait:
+                    stored = read_password()
+                    if stored and len(pw) <= PW_MAX and check_password(pw, stored):
+                        self.throttle.ok()
+                        sid = self.sessions.create(pw_tag(stored))
+                        return self.redirect("./", [self.cookie(sid, self.sessions.max_age)])
+                    self.throttle.failed()
+                    print("%s handoffs: failed login from %s" % (
+                        datetime.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"), self.client()),
+                        file=sys.stderr, flush=True)
+                    return self.login_page(401, LOGIN_FAILED)
+        return self.login_page(429, LOGIN_FAILED, [("Retry-After", str(wait))])
 
     def do_GET(self):  # noqa: N802 (http.server API)
         if not self.host_ok():
             return self.send(403, "text/plain; charset=utf-8", "forbidden host\n")
         path, _, query = self.path.partition("?")
+        token = self.token
+        if self.sessions:
+            sid = self.session()
+            if path == "/login":
+                return self.redirect("./") if sid else self.login_page()
+            if not sid:
+                if path.startswith("/api/"):
+                    return self.send_json({"error": "login required"}, 401)
+                return self.redirect("login")
+            token = csrf_token(sid)
+        elif path == "/login":
+            return self.redirect("./")
         q = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
         key = (handoff_root(), q.get("slug", ""), q.get("status", ""), q.get("task", ""))
         if path in ("/", "/index.html"):
-            return self.send(200, "text/html; charset=utf-8", PAGE.replace("__TOKEN__", self.token))
+            return self.send(200, "text/html; charset=utf-8", PAGE.replace("__TOKEN__", token))
         if path == "/api/tasks":
             data = collect(handoff_root())
-            data["writable"] = bool(self.token)
+            data["auth"] = bool(self.sessions)
             return self.send_json(data)
         if path == "/api/search":
             return self.send_json(search(handoff_root(), q.get("q", "")[:200]))
@@ -707,12 +1106,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802 (http.server API)
         if not self.host_ok():
             return self.send(403, "text/plain; charset=utf-8", "forbidden host\n")
-        origin = self.headers.get("Origin")
-        host = self.headers.get("Host") or ""
-        if not self.token or not hmac.compare_digest(self.headers.get("X-Handoffs-Token") or "", self.token) \
-                or (origin and origin != "http://" + host):
-            return self.send_json({"error": "forbidden"}, 403)
         path = self.path.split("?", 1)[0]
+        if not self.origin_ok():
+            return self.send_json({"error": "forbidden"}, 403)
+        token = self.token
+        if self.sessions:
+            if path == "/login":
+                return self.login()
+            sid = self.session()
+            if not sid:
+                return self.send_json({"error": "login required"}, 401)
+            token = csrf_token(sid)
+        if not token or not hmac.compare_digest(self.headers.get("X-Handoffs-Token") or "", token):
+            return self.send_json({"error": "forbidden"}, 403)
+        if path == "/api/logout" and self.sessions:
+            stored = read_password()
+            self.sessions.drop(sid, pw_tag(stored))
+            return self.send_json({"ok": True}, headers=[self.cookie("", 0)])
         if path not in ("/api/done", "/api/restore", "/api/rename", "/api/tip/delete"):
             return self.not_found()
         try:
@@ -952,7 +1362,6 @@ def service_main(argv):
     ap.add_argument("action", choices=["install", "uninstall", "restart", "status"])
     ap.add_argument("--port", type=int, help="port for the service (default: $HANDOFF_PORT or 8765)")
     ap.add_argument("--host", help="address to listen on (default: 127.0.0.1)")
-    ap.add_argument("--read-only", action="store_true", help="serve the dashboard read-only")
     ap.add_argument("--dry-run", action="store_true", help="print the service file and commands; change nothing")
     args = ap.parse_args(argv)
     kind = os.environ.get("HANDOFF_SERVICE_KIND") or service_kind()  # override for tests
@@ -981,8 +1390,10 @@ def service_main(argv):
             cmd += ["--port", str(args.port)]
         if args.host:
             cmd += ["--host", args.host]
-        if args.read_only:
-            cmd += ["--read-only"]
+        err = auth_error((args.host or "127.0.0.1").strip("[]"))
+        if err:
+            print("error: " + err, file=sys.stderr)
+            return 2
         text = service_file(kind, cmd, service_env())
         if args.dry_run:
             print("# %s" % path)
@@ -1035,6 +1446,8 @@ def main(argv=None):
         return service_main(argv[1:])
     if argv[:1] == ["paths"]:
         return paths_main(argv[1:])
+    if argv[:1] == ["auth"]:
+        return auth_main(argv[1:])
     ap = argparse.ArgumentParser(prog="handoffs", description="Local web dashboard for claude-handoff tasks.")
     env_port = os.environ.get("HANDOFF_PORT") or "8765"
     if not env_port.isdigit() or int(env_port) > 65535:
@@ -1045,7 +1458,6 @@ def main(argv=None):
                          "(default: $HANDOFF_PORT or 8765)" % (PORT_TRIES - 1))
     ap.add_argument("--host", default="127.0.0.1", help="address to listen on (default: 127.0.0.1)")
     ap.add_argument("--no-open", action="store_true", help="do not open a browser")
-    ap.add_argument("--read-only", action="store_true", help="disable Done/Restore/Rename and Delete buttons")
     ap.add_argument("--background", action="store_true", help="run detached and return (stop: --stop)")
     ap.add_argument("--stop", action="store_true", help="stop the dashboard started with --background")
     ap.add_argument("--json", action="store_true", help="print the task data as JSON and exit")
@@ -1062,14 +1474,21 @@ def main(argv=None):
         return start_background(argv, args.no_open)
 
     host = args.host.strip("[]")
+    err = auth_error(host)
+    if err:
+        print("error: " + err, file=sys.stderr)
+        return 2
+    auth, public, idle, max_age = auth_config()
     if host not in LOOPBACK:
         Handler.allowed_hosts = LOOPBACK | {host.lower()}
         Handler.any_ip = host in ("0.0.0.0", "::")
         print("warning: listening on %s; other machines may reach the dashboard" % host, file=sys.stderr)
-        if not args.read_only:
-            args.read_only = True
-            print("warning: not a loopback address, so the dashboard is read-only", file=sys.stderr)
-    if not args.read_only:
+    if public:
+        Handler.public = public_origin(public)
+        Handler.allowed_hosts = Handler.allowed_hosts | {urllib.parse.urlsplit(public).hostname.lower()}
+    if auth == "on":
+        Handler.sessions, Handler.throttle = Sessions(idle, max_age), Throttle()
+    else:
         Handler.token = secrets.token_urlsafe(24)
     drop_legacy()
     server = make_server(host, args.port)
@@ -1088,6 +1507,44 @@ def main(argv=None):
     finally:
         server.server_close()
     return 0
+
+
+LOGIN_PAGE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Handoffs: sign in</title>
+<style>
+:root { --fg: #1f2328; --muted: #656d76; --bg: #f6f8fa; --card: #fff; --line: #d0d7de; --accent: #0969da; --err: #cf222e; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e6edf3; --muted: #8d96a0; --bg: #0d1117; --card: #161b22; --line: #30363d; --accent: #4493f8; --err: #f85149; }
+}
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+form { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 24px;
+  width: min(320px, calc(100vw - 32px)); box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+input, button { font: inherit; border-radius: 8px; padding: 8px 12px; border: 1px solid var(--line); }
+input { background: var(--bg); color: var(--fg); }
+button { background: var(--accent); color: #fff; border-color: transparent; cursor: pointer; font-weight: 500; }
+input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.err { color: var(--err); margin: 0; font-size: 14px; }
+</style>
+</head>
+<body>
+<form method="post" action="login">
+  <h1>Handoffs</h1>
+  __MSG__
+  <input type="text" name="username" value="handoffs" autocomplete="username" hidden>
+  <input type="password" name="password" aria-label="Password" placeholder="Password"
+         autocomplete="current-password" required autofocus maxlength="1024">
+  <button type="submit">Sign in</button>
+</form>
+</body>
+</html>
+"""
 
 
 PAGE = r"""<!doctype html>
@@ -1383,6 +1840,7 @@ footer a:hover { color: var(--accent); text-decoration: underline; }
     <h1>Handoffs</h1>
     <button id="reload" class="ib ghost" title="Reload" aria-label="Reload"></button>
     <button id="theme" class="ib ghost"></button>
+    <button id="logout" class="ib ghost" title="Sign out" aria-label="Sign out" hidden></button>
   </header>
   <div id="error" class="error" hidden></div>
   <div class="layout">
@@ -1609,6 +2067,7 @@ const ICONS = {
   commit: ["M9.0 12a3 3 0 1 0 6.0 0a3 3 0 1 0 -6.0 0", "M3 12L9 12", "M15 12L21 12"],
   close: ["M18 6 6 18", "m6 6 12 12"],
   up: ["m18 15-6-6-6 6"],
+  logout: ["m16 17 5-5-5-5", "M21 12H9", "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"],
   reload: ["M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8", "M21 3v5h-5"],
   edit: ["M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z", "m15 5 4 4"],
   trash: ["M10 11v6", "M14 11v6", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6", "M3 6h18", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"],
@@ -1646,8 +2105,14 @@ function chip(text, cls, title) {
 const base = (p) => p.replace(/\/+$/, "").split("/").pop();
 const DAY = 86400000;
 
+// auth = on: a request without a valid session gets 401; sign in again.
+function signedOut(r) {
+  if (r.status === 401) { location.href = "login"; throw new Error("signed out"); }
+}
+
 async function api(path, params) {
   const r = await fetch("api/" + path + (params ? "?" + new URLSearchParams(params) : ""), { cache: "no-store" });
+  signedOut(r);
   if (!r.ok) throw new Error("HTTP " + r.status);
   return r.json();
 }
@@ -1658,6 +2123,7 @@ async function post(path, body) {
     headers: { "Content-Type": "application/json", "X-Handoffs-Token": TOKEN },
     body: JSON.stringify(body),
   });
+  signedOut(r);
   const res = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(res.error || "HTTP " + r.status);
   return res;
@@ -1990,30 +2456,28 @@ function taskPanel(t, body) {
   copyBtn.classList.replace("ghost", "primary");
   body.appendChild(code);
   const acts = [copyBtn];
-  if (data.writable) {
-    const ren = ibtn("edit", "Rename", "ren");
-    ren.title = "rename @" + t.task;
-    ren.addEventListener("click", async () => {
-      const name = prompt("New name for @" + t.task + " (lowercase a-z0-9._-):", t.task);
-      const next = name && name.trim().replace(/^@/, "");
-      if (!next || next === t.task) return;
-      if (!/^[a-z0-9][a-z0-9._-]*$/.test(next) || next === "_archive") { alert("Invalid name: use lowercase a-z0-9._-"); return; }
-      ren.disabled = true;
-      try { await post("rename", { slug: t.slug, status: t.status, task: t.task, new: next }); closePanel(); await load(); }
-      catch (e) { ren.disabled = false; alert("Failed: " + e.message); }
-    });
-    acts.push(ren);
-    const done = t.status === "active";
-    const act = ibtn(done ? "check" : "undo", done ? "Done" : "Restore", "act");
-    act.title = done ? "archive the task (like /handoff @" + t.task + " done)" : "move the task back to active";
-    act.addEventListener("click", async () => {
-      if (!confirm((done ? "Archive" : "Restore") + " @" + t.task + "?")) return;
-      act.disabled = true;
-      try { await post(done ? "done" : "restore", { slug: t.slug, task: t.task }); closePanel(); await load(); }
-      catch (e) { act.disabled = false; alert("Failed: " + e.message); }
-    });
-    acts.push(act);
-  }
+  const ren = ibtn("edit", "Rename", "ren");
+  ren.title = "rename @" + t.task;
+  ren.addEventListener("click", async () => {
+    const name = prompt("New name for @" + t.task + " (lowercase a-z0-9._-):", t.task);
+    const next = name && name.trim().replace(/^@/, "");
+    if (!next || next === t.task) return;
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(next) || next === "_archive") { alert("Invalid name: use lowercase a-z0-9._-"); return; }
+    ren.disabled = true;
+    try { await post("rename", { slug: t.slug, status: t.status, task: t.task, new: next }); closePanel(); await load(); }
+    catch (e) { ren.disabled = false; alert("Failed: " + e.message); }
+  });
+  acts.push(ren);
+  const done = t.status === "active";
+  const act = ibtn(done ? "check" : "undo", done ? "Done" : "Restore", "act");
+  act.title = done ? "archive the task (like /handoff @" + t.task + " done)" : "move the task back to active";
+  act.addEventListener("click", async () => {
+    if (!confirm((done ? "Archive" : "Restore") + " @" + t.task + "?")) return;
+    act.disabled = true;
+    try { await post(done ? "done" : "restore", { slug: t.slug, task: t.task }); closePanel(); await load(); }
+    catch (e) { act.disabled = false; alert("Failed: " + e.message); }
+  });
+  acts.push(act);
   const box = el("div", "details");
   body.appendChild(box);
   details(t, box, acts).catch((e) => { box.textContent = "Cannot load (" + e.message + ")."; });
@@ -2063,17 +2527,15 @@ function tipPanel(tip, body) {
   const row = el("div", "actions");
   row.appendChild(el("div", "file", tilde(tip.file)));
   box.appendChild(row);
-  if (data.writable) {
-    const del = ibtn("trash", "Delete");
-    del.title = "delete the tip file";
-    del.addEventListener("click", async () => {
-      if (!confirm("Delete tip " + tip.id + "?")) return;
-      del.disabled = true;
-      try { await post("tip/delete", { slug: tip.slug, id: tip.id }); closePanel(); await load(); }
-      catch (e) { del.disabled = false; alert("Failed: " + e.message); }
-    });
-    row.appendChild(del);
-  }
+  const del = ibtn("trash", "Delete");
+  del.title = "delete the tip file";
+  del.addEventListener("click", async () => {
+    if (!confirm("Delete tip " + tip.id + "?")) return;
+    del.disabled = true;
+    try { await post("tip/delete", { slug: tip.slug, id: tip.id }); closePanel(); await load(); }
+    catch (e) { del.disabled = false; alert("Failed: " + e.message); }
+  });
+  row.appendChild(del);
   body.appendChild(box);
 }
 
@@ -2320,9 +2782,11 @@ function render() {
 async function load() {
   try {
     const r = await fetch("api/tasks", { cache: "no-store" });
+    signedOut(r);
     if (!r.ok) throw new Error("HTTP " + r.status);
     const next = await r.json();
     $("#error").hidden = true;
+    $("#logout").hidden = !next.auth;
     const same = data && JSON.stringify(next) === JSON.stringify(data);
     data = next;
     if (!same) render();
@@ -2333,6 +2797,11 @@ async function load() {
 }
 
 $("#reload").appendChild(icon("reload"));
+$("#logout").appendChild(icon("logout"));
+$("#logout").addEventListener("click", async () => {
+  try { await post("logout", {}); } catch (e) { /* signed out already */ }
+  location.href = "login";
+});
 // Theme button: auto (system) -> light -> dark -> auto; kept in localStorage.
 const THEMES = { auto: "light", light: "dark", dark: "auto" };
 function setTheme(t) {

@@ -10,7 +10,12 @@
 #              PostToolUseFailure + UserPromptSubmit hooks in
 #              ~/.claude/settings.json (needs python3).
 # Declining a part that is installed removes it.
+# With the dashboard it also asks whether the dashboard needs a password
+# (`handoffs auth on`, e.g. on a server behind an HTTPS proxy; the password
+# is read from the terminal) or not (`handoffs auth off`); without a terminal
+# and without --dashboard-auth/--no-dashboard-auth, the setting is kept.
 # Usage: ./install.sh [--skills|--no-skills] [--dashboard|--no-dashboard] [--tips|--no-tips]
+#                     [--dashboard-auth|--no-dashboard-auth]
 #        ./install.sh --dashboard-only   (= --no-skills --dashboard --no-tips)
 #        ./install.sh --uninstall
 #    or: curl -fsSL https://raw.githubusercontent.com/v-kravchenko/claude-handoff/main/install.sh | bash [-s -- FLAGS]
@@ -50,7 +55,7 @@ STATE=${HANDOFF_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/claude-handoff}
 CONF="$STATE/install.conf"
 # Before 1.5.4 the choices were kept in the handoff skill.
 OLD_CONF="$DEST/handoff/install.conf"
-USAGE="usage: install.sh [--skills|--no-skills] [--dashboard|--no-dashboard] [--tips|--no-tips] | --dashboard-only | --uninstall"
+USAGE="usage: install.sh [--skills|--no-skills] [--dashboard|--no-dashboard] [--tips|--no-tips] [--dashboard-auth|--no-dashboard-auth] | --dashboard-only | --uninstall"
 OURS='part of claude-handoff'
 HOOK_CMD="\"$DEST/handoff/handoff.sh\" \"\${CLAUDE_PROJECT_DIR:-.}\" tips hook"
 PROMPT_CMD="\"$DEST/handoff/handoff.sh\" \"\${CLAUDE_PROJECT_DIR:-.}\" tips prompt-hook"
@@ -104,6 +109,29 @@ install_dashboard() {
   esac
   command -v python3 >/dev/null 2>&1 ||
     echo "warning: \`$DASH\` needs python3 (Termux: pkg install python)" >&2
+}
+
+# dashboard_auth y|n|"": turns the dashboard's password login on or off
+# ("": ask on a terminal, else keep it). Off only touches a login that is on.
+dashboard_auth() {
+  local want=$1 now
+  [[ -x $BIN/$DASH ]] && grep -q "$OURS" "$BIN/$DASH" 2>/dev/null || return 0
+  if ! command -v python3 >/dev/null 2>&1; then
+    [[ -n $want ]] && echo "warning: python3 not found; run \`$DASH auth $([[ $want == y ]] && echo on || echo off)\` later" >&2
+    return 0
+  fi
+  now=$("$BIN/$DASH" auth status 2>/dev/null | sed -n 's/^auth: //p')
+  if [[ -z $want ]]; then
+    [[ -t 0 ]] || return 0
+    want=$(ask "Require a password for the dashboard (a server behind HTTPS)?" "$([[ $now == on ]] && echo y || echo n)")
+  fi
+  if [[ $want == y ]]; then
+    # Asks for a password on the terminal if there is none yet.
+    [[ $now == on ]] || "$BIN/$DASH" auth on ||
+      echo "warning: the dashboard login is off; run \`$DASH auth on\`" >&2
+  elif [[ $now == on ]]; then
+    "$BIN/$DASH" auth off
+  fi
 }
 
 remove_dashboard() {
@@ -286,7 +314,7 @@ bootstrap() {
 }
 
 main() {
-  local skills="" dashboard="" tips="" uninstall=0 arg s
+  local skills="" dashboard="" tips="" auth="" uninstall=0 arg s
   for arg in "$@"; do
     case $arg in
       --skills) skills=y ;;
@@ -296,6 +324,8 @@ main() {
       --no-dashboard) dashboard=n ;;
       --tips) tips=y ;;
       --no-tips) tips=n ;;
+      --dashboard-auth) auth=y ;;
+      --no-dashboard-auth) auth=n ;;
       --uninstall) uninstall=1 ;;
       *) echo "$USAGE" >&2; exit 2 ;;
     esac
@@ -305,11 +335,16 @@ main() {
     echo "error: tips need the skills (drop --no-skills or --tips)" >&2; exit 2
   fi
 
+  if [[ $dashboard == n && -n $auth ]]; then
+    echo "error: --dashboard-auth and --no-dashboard-auth need the dashboard" >&2; exit 2
+  fi
+
   if ((uninstall)); then
     for s in "${SKILLS[@]}"; do remove_skill "$s"; done
     remove_tips
     remove_dashboard
-    rm -f "$CONF"
+    # The config file and the password hash stay; signed-in sessions do not.
+    rm -f "$CONF" "$STATE/sessions"
     echo "done: saved handoffs and tips were kept (see root= in ${HANDOFF_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-handoff/config}; default ${XDG_DATA_HOME:-$HOME/.local/share}/claude-handoff)"
     exit 0
   fi
@@ -353,7 +388,7 @@ main() {
     for s in "${SKILLS[@]}"; do install_skill "$s"; done
     chmod +x "$DEST/handoff/handoff.sh"
   fi
-  if [[ $dashboard == y ]]; then install_dashboard; else remove_dashboard; fi
+  if [[ $dashboard == y ]]; then install_dashboard; dashboard_auth "$auth"; else remove_dashboard; fi
   if [[ $tips == y ]]; then install_tips; else remove_tips; fi
   # Tips first: their hooks call the handoff skill.
   if [[ $skills == n ]]; then

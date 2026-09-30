@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.5] - 2026-09-30
+
+### Added
+
+- Password login for the dashboard: `auth = on` in the config file
+  (`handoffs auth on`), for a dashboard on a server behind an HTTPS proxy
+  (`public_url = https://…`, which is accepted as `Host` and `Origin`, so
+  Caddy needs only `reverse_proxy 127.0.0.1:8765`). The password (6 to 1024
+  characters) is an scrypt hash in `~/.config/claude-handoff/password`;
+  sessions last 7 days idle and 30 days at most (`auth.idle`, `auth.max`),
+  survive a restart and have their own token; 5 wrong passwords lock the
+  login for 30 seconds, doubling up to 15 minutes; failed logins are
+  logged with the client's IP. *Sign out* in the header.
+- `handoffs auth status|on|off|password [--generate|--stdin]|logout-all`.
+- `install.sh` asks whether the dashboard needs a password
+  (`--dashboard-auth`, `--no-dashboard-auth`); `--uninstall` signs out the
+  sessions and keeps the password.
+
+### Removed
+
+- `--read-only` (of `handoffs` and `handoffs service install`): whoever can
+  open the dashboard can change it. A non-loopback `--host` or a
+  `public_url` now needs `auth = on`; the dashboard exits with 2 instead of
+  serving a read-only page. A service installed with `--read-only` fails to
+  start: run `handoffs service install` again.
+
 ## [1.5.4] - 2026-09-30
 
 ### Added
@@ -430,6 +456,7 @@ All notable changes to this project are documented here. The format follows
 - `install.sh` for installing as personal skills.
 - End-to-end tests and CI (shellcheck, Ubuntu and macOS).
 
+[1.5.5]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.4...v1.5.5
 [1.5.4]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.3...v1.5.4
 [1.5.3]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.2...v1.5.3
 [1.5.2]: https://github.com/v-kravchenko/claude-handoff/compare/v1.5.1...v1.5.2

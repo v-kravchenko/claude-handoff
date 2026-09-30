@@ -74,12 +74,17 @@ copy. It asks up to three questions (the defaults are your previous answers):
   An existing `tips` skill that is not ours is left alone, and so is a
   `CLAUDE.md` block whose end marker was removed (fix it by hand).
 
+With the dashboard it also asks whether the dashboard needs a password (see
+[Remote access](#remote-access)); yes runs `handoffs auth on`, which asks
+for a password on the terminal if none is set yet.
+
 Answering no removes a part that is installed. Flags skip the questions:
 `--skills`, `--no-skills`, `--dashboard`, `--no-dashboard`, `--tips`,
-`--no-tips`, and `--dashboard-only` (`--no-skills --dashboard --no-tips`).
+`--no-tips`, `--dashboard-auth`, `--no-dashboard-auth`, and
+`--dashboard-only` (`--no-skills --dashboard --no-tips`).
 Without a terminal and without flags, the previous choices are kept (saved
 in `$HANDOFF_STATE/install.conf`; a fresh install gets the skills and the
-dashboard, not tips).
+dashboard, not tips, and the dashboard's login stays as it is).
 
 | Task | Command |
 | --- | --- |
@@ -90,7 +95,8 @@ dashboard, not tips).
 | Uninstall | `... \| bash -s -- --uninstall` |
 
 Uninstall removes everything the script installed (skills, dashboard, the
-`CLAUDE.md` block and the hooks); saved handoffs and tips are kept. To read
+`CLAUDE.md` block and the hooks) and signs out the dashboard's sessions;
+saved handoffs and tips, the config file and the dashboard password are kept. To read
 the script before running it, download it first:
 `curl -fsSLO https://raw.githubusercontent.com/v-kravchenko/claude-handoff/main/install.sh`,
 then `bash install.sh`.
@@ -278,9 +284,8 @@ date.
 | Option | Meaning |
 | --- | --- |
 | `--port N` | Port to listen on (default `$HANDOFF_PORT` or `8765`); if it is busy, the next nine are tried. `0` picks any free port. |
-| `--host ADDR` | Address to listen on (default `127.0.0.1`). |
+| `--host ADDR` | Address to listen on (default `127.0.0.1`). Any other than a loopback address needs `auth = on` (see [Remote access](#remote-access)). |
 | `--no-open` | Only print the URL. |
-| `--read-only` | Hide the *Done*, *Restore*, *Rename* and *Delete* buttons and refuse changes. Always on when `--host` is not a loopback address. |
 | `--background` | Start detached, print the URL and return; a second call reuses the running one. |
 | `--stop` | Stop the dashboard started with `--background`. |
 | `--json` | Print the task data as JSON and exit. |
@@ -289,7 +294,7 @@ To keep the dashboard always running, install it as a user service
 (systemd `--user` on Linux, a launchd agent on macOS):
 
 ```
-handoffs service install [--port N] [--host ADDR] [--read-only]
+handoffs service install [--port N] [--host ADDR]
 handoffs service status | restart | uninstall
 ```
 
@@ -306,6 +311,55 @@ The browser opens with `open` (macOS), `xdg-open` (Linux desktop),
 `termux-open-url` (Termux). Over SSH or without a display, the command only
 prints the URL. On Termux, keep Termux in the foreground for the browser to
 open, or tap the printed URL.
+
+### Remote access
+
+Whoever can open the dashboard can also change it (*Done*, *Restore*,
+*Rename*, *Delete*); there is no read-only mode. So by default (`auth = off`)
+it listens only on a loopback address. To reach it from elsewhere, for
+example on a server, turn on the password login:
+
+```bash
+handoffs auth password    # asks twice; or --generate, or --stdin
+handoffs auth on          # sets auth = on in the config file, restarts the service
+```
+
+On a server, keep the dashboard on `127.0.0.1` behind an HTTPS reverse
+proxy and tell it its public address. With [Caddy](https://caddyserver.com):
+
+```text
+# ~/.config/claude-handoff/config
+auth = on
+public_url = https://handoffs.example.com
+```
+
+```text
+# Caddyfile
+handoffs.example.com {
+	reverse_proxy 127.0.0.1:8765
+}
+```
+
+`public_url` is accepted as `Host` and `Origin`, so the proxy needs nothing
+else. A browser session lasts 7 days without use and 30 days at most
+(`auth.idle = 7d`, `auth.max = 30d`; `s`, `m`, `h` or `d`); it survives a
+restart of the dashboard. *Sign out* (top right) ends this session,
+`handoffs auth logout-all` all of them, and a new password signs everyone
+out. After 5 wrong passwords the login is locked for 30 seconds, doubling
+up to 15 minutes. Failed logins are written to the dashboard's log as
+`failed login from <IP>` (the proxy's `X-Forwarded-For`), for fail2ban.
+
+| Command | Meaning |
+| --- | --- |
+| `handoffs auth status` | Show `auth`, the password (set or not), `public_url` and the sessions. |
+| `handoffs auth on` / `off` | Set `auth` in the config file and restart the service (`on` asks for a password if there is none). |
+| `handoffs auth password [--generate \| --stdin]` | Set a new password (6 to 1024 characters); `--generate` prints a random one. |
+| `handoffs auth logout-all` | Sign out every session. |
+
+The dashboard refuses to start with `auth = off` on a non-loopback address
+or with `public_url` set (`needs auth = on`). With `auth = on` over plain
+HTTP (`--host 0.0.0.0` on a LAN) the password crosses the network in the
+clear: use HTTPS.
 
 ## How it works
 
@@ -400,8 +454,8 @@ archive.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `HANDOFF_ROOT` | `root=` in the config file, else `${XDG_DATA_HOME:-~/.local/share}/claude-handoff` | Where handoffs and tips are stored; any directory works. |
-| `HANDOFF_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/claude-handoff/config` | The config file (`root=`, `path.<project>=`). |
-| `HANDOFF_STATE` | `${XDG_STATE_HOME:-~/.local/state}/claude-handoff` | Per-machine files: project paths, the tips log, the dashboard's PID file and log. |
+| `HANDOFF_CONFIG` | `${XDG_CONFIG_HOME:-~/.config}/claude-handoff/config` | The config file (`root=`, `path.<project>=`, the dashboard's `auth`, `public_url`, `auth.idle`, `auth.max`); the dashboard password hash is the `password` file next to it. |
+| `HANDOFF_STATE` | `${XDG_STATE_HOME:-~/.local/state}/claude-handoff` | Per-machine files: project paths, the tips log, the dashboard's PID file, log and sessions. |
 | `HANDOFF_KEEP` | `10` | Handoffs kept per task, the task's file included (a positive integer; anything else means 10). Older ones are deleted from `_history/` when you save. |
 | `HANDOFF_PORT` | `8765` | Default port of the `handoffs` dashboard. |
 | `TIPS_LOG_MAX` | `262144` | Size in bytes after which the tips log moves to `tips.1.jsonl`. |
@@ -457,16 +511,22 @@ Set them in your shell profile or in the `env` block of
 - The tips hooks only read the request or the failed command and its error,
   search local tip files and print matching titles; they send nothing
   anywhere and log only the matched tip ids, not the prompt or error text.
-- The dashboard listens on `127.0.0.1` only and reads nothing but handoff
-  files of listed tasks and tip files. It rejects requests whose `Host` header is not
-  local, which blocks DNS-rebinding attacks from web pages. Its only changes
-  are *Done*, *Restore*, *Rename* and deleting a tip: they need a random token that is embedded in the
-  page at startup and sent in a custom header, so other web pages cannot
-  trigger them. `--read-only` turns them off; it is forced on when `--host` is
-  not a loopback address. Other programs on the same
-  machine (on Android, other apps) are not web pages: while the dashboard
-  runs they can read it and, unless it is `--read-only`, also use its
-  buttons.
+- The dashboard reads nothing but handoff files of listed tasks and tip
+  files. It rejects requests whose `Host` header is not local (or
+  `public_url`'s), which blocks DNS-rebinding attacks from web pages. Its
+  only changes are *Done*, *Restore*, *Rename* and deleting a tip: they need
+  a random token embedded in the page and sent in a custom header, and a
+  matching `Origin`, so other web pages cannot trigger them.
+- Without `auth = on` it listens on a loopback address only. Other programs
+  on the same machine (on Android, other apps) are not web pages: while the
+  dashboard runs they can read it and use its buttons. `auth = on` closes
+  that too.
+- With `auth = on` the password is stored as an scrypt hash (N=2^17, r=8,
+  PBKDF2-SHA256 with 600 000 iterations where Python lacks scrypt) in a
+  `0600` file; sessions are random 256-bit IDs, of which only a SHA-256 is
+  saved (`$HANDOFF_STATE/sessions`, `0600`), with a token per session. The
+  cookie is `HttpOnly` and `SameSite=Strict`, and behind an HTTPS
+  `public_url` it is a `__Host-` cookie with `Secure`.
 
 ## Development
 
